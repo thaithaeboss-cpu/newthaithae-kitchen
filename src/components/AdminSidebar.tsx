@@ -91,6 +91,7 @@ export default function AdminSidebar() {
   const { staff } = useStaff();
   const [showNotifDropdown, setShowNotifDropdown] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
+  const notifRefMobile = useRef<HTMLDivElement>(null);
 
   async function handleLogout() {
     if (!confirm(locale === "th" ? "ออกจากระบบ?" : "Sign out?")) return;
@@ -109,7 +110,10 @@ export default function AdminSidebar() {
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
-      if (notifRef.current && !notifRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      const inDesktop = notifRef.current?.contains(target);
+      const inMobile = notifRefMobile.current?.contains(target);
+      if (!inDesktop && !inMobile) {
         setShowNotifDropdown(false);
       }
     }
@@ -225,7 +229,7 @@ export default function AdminSidebar() {
 
   return (
     <>
-      {/* Mobile hamburger + notification */}
+      {/* Mobile hamburger (top-left) */}
       <div className="lg:hidden fixed top-4 left-4 z-50 flex items-center gap-2">
         <button
           onClick={() => setMobileOpen(true)}
@@ -234,6 +238,76 @@ export default function AdminSidebar() {
         >
           <span className="material-symbols-outlined">menu</span>
         </button>
+      </div>
+
+      {/* Mobile notification bell (top-right) */}
+      <div className="lg:hidden fixed top-4 right-4 z-50" ref={notifRefMobile}>
+        <button
+          onClick={() => {
+            setShowNotifDropdown(!showNotifDropdown);
+            if (!showNotifDropdown && unreadCount > 0) markAllRead();
+          }}
+          className="relative w-10 h-10 flex items-center justify-center rounded-lg bg-surface-container-lowest text-on-surface shadow-lg border border-outline-variant/30"
+          aria-label="Notifications"
+        >
+          <span className="material-symbols-outlined text-[20px]">notifications</span>
+          {unreadCount > 0 && (
+            <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
+              {unreadCount > 9 ? "9+" : unreadCount}
+            </span>
+          )}
+        </button>
+
+        {showNotifDropdown && (
+          <div className="fixed top-16 right-4 left-4 max-w-sm ml-auto bg-surface-container-lowest rounded-xl shadow-xl border border-outline-variant/30 overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-outline-variant/30">
+              <h3 className="font-semibold text-sm text-on-surface">
+                {locale === "th" ? "การแจ้งเตือน" : "Notifications"}
+              </h3>
+              {notifications.length > 0 && (
+                <button onClick={clearAll} className="text-xs text-on-surface-variant hover:text-on-surface">
+                  {locale === "th" ? "ล้างทั้งหมด" : "Clear all"}
+                </button>
+              )}
+            </div>
+            <div className="max-h-[60vh] overflow-y-auto">
+              {notifications.length === 0 ? (
+                <div className="py-10 text-center">
+                  <span className="material-symbols-outlined text-on-surface-variant/30 text-4xl">notifications_off</span>
+                  <p className="text-sm text-on-surface-variant mt-2">
+                    {locale === "th" ? "ไม่มีการแจ้งเตือน" : "No notifications"}
+                  </p>
+                </div>
+              ) : (
+                notifications.map((n) => (
+                  <div
+                    key={n.id}
+                    className={`px-4 py-3 border-b border-outline-variant/20 hover:bg-surface-container-low transition-colors ${!n.read ? "bg-primary/5" : ""}`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
+                        <span className="material-symbols-outlined text-primary text-base">shopping_bag</span>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-on-surface">
+                          {locale === "th" ? "ออเดอร์ใหม่" : "New Order"}{" "}
+                          <span className="font-mono text-primary">#{n.orderNumber}</span>
+                        </p>
+                        <p className="text-xs text-on-surface-variant mt-0.5">
+                          {n.branchName} · ฿{formatCurrency(n.total || 0)}
+                        </p>
+                        <p className="text-[10px] text-on-surface-variant/60 mt-1">
+                          {timeAgo(n.timestamp, locale)}
+                        </p>
+                      </div>
+                      {!n.read && <div className="w-2 h-2 rounded-full bg-primary shrink-0 mt-2" />}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Notification bell (desktop - fixed top right) */}
