@@ -353,6 +353,7 @@ function StaffForm({
               <option value="kitchen">{roleLabels.kitchen[locale as 'th' | 'en']}</option>
               <option value="packer">{roleLabels.packer[locale as 'th' | 'en']}</option>
               <option value="both">{roleLabels.both[locale as 'th' | 'en']}</option>
+              <option value="delivery">{roleLabels.delivery[locale as 'th' | 'en']}</option>
               <option value="admin">{roleLabels.admin[locale as 'th' | 'en']}</option>
             </select>
           </div>
