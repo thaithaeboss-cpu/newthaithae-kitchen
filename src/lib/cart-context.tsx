@@ -2,6 +2,9 @@
 
 import { createContext, useContext, useReducer, useCallback, type ReactNode } from 'react';
 import type { Product } from '@/data/mock-data';
+import { effectivePrice, type CustomerType } from './firestore';
+import { useBranches } from './useFirestore';
+import { useBranchContext } from './branch-context';
 
 // ======================== TYPES ========================
 
@@ -27,6 +30,8 @@ interface CartContextValue {
   cartSubtotal: number;
   cartVat: number;
   cartCount: number;
+  customerType: CustomerType;
+  unitPriceFor: (product: Product) => number;
   addToCart: (product: Product, quantity: number) => void;
   removeFromCart: (productId: string) => void;
   updateQuantity: (productId: string, quantity: number) => void;
@@ -115,8 +120,21 @@ export function CartProvider({ children }: { children: ReactNode }) {
     [state.items]
   );
 
+  // Resolve current branch's customer type so we can charge the right
+  // tier. Falls back to 'internal' for legacy branches without the flag.
+  const { branchId } = useBranchContext();
+  const { branches } = useBranches();
+  const currentBranch = branches.find((b) => b.id === branchId);
+  const customerType: CustomerType =
+    currentBranch?.customerType === 'external' ? 'external' : 'internal';
+
+  const unitPriceFor = useCallback(
+    (product: Product) => effectivePrice(product, customerType),
+    [customerType],
+  );
+
   const cartSubtotal = state.items.reduce(
-    (sum, item) => sum + item.product.price * item.quantity,
+    (sum, item) => sum + effectivePrice(item.product, customerType) * item.quantity,
     0
   );
   const cartVat = cartSubtotal * 0.07;
@@ -131,6 +149,8 @@ export function CartProvider({ children }: { children: ReactNode }) {
         cartSubtotal,
         cartVat,
         cartCount,
+        customerType,
+        unitPriceFor,
         addToCart,
         removeFromCart,
         updateQuantity,

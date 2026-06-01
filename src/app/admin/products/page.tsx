@@ -8,6 +8,7 @@ import {
 } from '@/data/mock-data';
 import { useProducts, useBranches } from '@/lib/useFirestore';
 import { addProduct, updateProduct, deleteProduct, updateStock } from '@/lib/firestore';
+import { deleteField } from 'firebase/firestore';
 import { useLanguage } from '@/lib/language-context';
 
 type StockFilter = 'all' | 'in_stock' | 'low_stock' | 'out_of_stock';
@@ -97,10 +98,28 @@ export default function ProductsPage() {
     setSaving(true);
     try {
       if (editProductItem) {
-        const { id, ...rest } = formData as Product & { id?: string };
-        await updateProduct(editProductItem.id, rest);
+        // For updates, an undefined priceExternal means the admin cleared
+        // the field — translate it to deleteField() so Firestore drops the
+        // value rather than keeping the stale one. Other undefined fields
+        // are stripped (no-op).
+        const patch: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(formData)) {
+          if (k === 'id') continue;
+          if (v === undefined) {
+            if (k === 'priceExternal' && editProductItem.priceExternal !== undefined) {
+              patch[k] = deleteField();
+            }
+            continue;
+          }
+          patch[k] = v;
+        }
+        await updateProduct(editProductItem.id, patch as any);
       } else {
-        await addProduct(formData as any);
+        // For new products, just strip undefined fields — Firestore rejects them.
+        const cleaned = Object.fromEntries(
+          Object.entries(formData).filter(([, v]) => v !== undefined),
+        );
+        await addProduct(cleaned as any);
       }
       setShowModal(false);
       refresh();
@@ -277,6 +296,11 @@ export default function ProductsPage() {
                   <td className="px-4 py-3 text-on-surface-variant">{getCategoryName(p.category)}</td>
                   <td className="px-4 py-3 text-right font-medium text-on-surface">
                     ฿{p.price.toLocaleString()}
+                    {p.priceExternal !== undefined && (
+                      <span className="block text-[10px] font-normal text-amber-700">
+                        {locale === 'th' ? 'นอก' : 'Ext'}: ฿{p.priceExternal.toLocaleString()}
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-right font-medium text-on-surface">{p.stock}</td>
                   <td className="px-4 py-3 text-on-surface-variant">{p.unitTh}</td>
@@ -367,6 +391,11 @@ export default function ProductsPage() {
               <div>
                 <p className="text-on-surface-variant">{t('price')}</p>
                 <p className="font-medium text-on-surface">฿{p.price.toLocaleString()}</p>
+                {p.priceExternal !== undefined && (
+                  <p className="text-[10px] text-amber-700">
+                    {locale === 'th' ? 'นอก' : 'Ext'}: ฿{p.priceExternal.toLocaleString()}
+                  </p>
+                )}
               </div>
               <div>
                 <p className="text-on-surface-variant">{t('stock_level')}</p>
@@ -467,9 +496,11 @@ export default function ProductsPage() {
                   </select>
                 </div>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-on-surface mb-1">{t('price_baht')}</label>
+                  <label className="block text-sm font-medium text-on-surface mb-1">
+                    {locale === 'th' ? 'ราคาลูกค้าใน (บาท)' : 'Internal price (THB)'}
+                  </label>
                   <input
                     type="number"
                     value={formData.price}
@@ -477,6 +508,26 @@ export default function ProductsPage() {
                     className="w-full px-3 py-2 rounded-lg border border-outline-variant/50 bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
                   />
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-on-surface mb-1">
+                    {locale === 'th' ? 'ราคาลูกค้านอก (บาท)' : 'External price (THB)'}
+                  </label>
+                  <input
+                    type="number"
+                    value={formData.priceExternal ?? ''}
+                    placeholder={locale === 'th' ? 'ไม่ตั้ง = ใช้ราคาลูกค้าใน' : 'Leave blank = same as internal'}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      setFormData({
+                        ...formData,
+                        priceExternal: raw === '' ? undefined : Number(raw),
+                      });
+                    }}
+                    className="w-full px-3 py-2 rounded-lg border border-outline-variant/50 bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-on-surface mb-1">{t('unit')}</label>
                   <input

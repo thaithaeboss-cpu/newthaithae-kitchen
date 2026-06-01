@@ -31,7 +31,11 @@ export interface Product {
   nameTh: string;
   nameEn: string;
   category: 'glass' | 'meat' | 'curry' | 'sauce' | 'dessert' | 'filling';
+  // Default price used for internal branches and reports.
   price: number;
+  // Optional override for external customers. When unset, external
+  // customers see `price`.
+  priceExternal?: number;
   unit: string;
   stock: number;
   minStock: number;
@@ -43,6 +47,18 @@ export interface Product {
   unitTh?: string;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export type CustomerType = 'internal' | 'external';
+
+// Returns the price a branch of the given customer type should pay
+// for the product. Missing customer type or missing priceExternal both
+// fall back to the default `price`.
+export function effectivePrice(product: Pick<Product, 'price' | 'priceExternal'>, customerType?: CustomerType): number {
+  if (customerType === 'external' && typeof product.priceExternal === 'number') {
+    return product.priceExternal;
+  }
+  return product.price;
 }
 
 export interface Branch {
@@ -59,6 +75,8 @@ export interface Branch {
   isActive: boolean;
   favoriteProductIds?: string[];
   ownerEmail?: string;
+  // Pricing tier. Missing value is treated as 'internal' for legacy rows.
+  customerType?: CustomerType;
   createdAt: Date;
   updatedAt: Date;
 }

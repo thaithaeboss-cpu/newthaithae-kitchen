@@ -10,7 +10,8 @@ export interface Product {
   nameTh: string;
   nameEn: string;
   category: ProductCategory;
-  price: number;        // THB
+  price: number;        // THB — default / internal-customer price
+  priceExternal?: number;  // optional override for external customers
   unit: string;
   unitTh: string;
   stock: number;

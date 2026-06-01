@@ -5,9 +5,9 @@ import { type ProductCategory, type Product, type ProductCategoryInfo } from '@/
 import { useCart } from '@/lib/cart-context';
 import { useLanguage } from '@/lib/language-context';
 import type { TranslationKey } from '@/lib/i18n';
-import { useProducts } from '@/lib/useFirestore';
+import { useProducts, useBranches } from '@/lib/useFirestore';
 import { useBranchContext } from '@/lib/branch-context';
-import { toggleBranchFavorite } from '@/lib/firestore';
+import { toggleBranchFavorite, effectivePrice, type CustomerType } from '@/lib/firestore';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 
@@ -46,7 +46,7 @@ function getStockLevel(stock: number, minStock: number) {
 
 // ======================== PRODUCT CARD ========================
 
-function ProductCard({ product, isFavorite, onToggleFavorite }: { product: Product; isFavorite: boolean; onToggleFavorite: () => void }) {
+function ProductCard({ product, isFavorite, onToggleFavorite, customerType }: { product: Product; isFavorite: boolean; onToggleFavorite: () => void; customerType: CustomerType }) {
   const { addToCart, updateQuantity, getItemQuantity, isInCart } = useCart();
   const { locale, t } = useLanguage();
   const inCart = isInCart(product.id);
@@ -121,7 +121,7 @@ function ProductCard({ product, isFavorite, onToggleFavorite }: { product: Produ
           {locale === 'th' ? product.nameTh : product.nameEn}
         </h3>
         <p className="font-headline font-bold text-primary text-base mt-0.5">
-          ฿{product.price.toLocaleString()} <span className="text-xs font-normal text-on-surface-variant">/ {product.unit}</span>
+          ฿{effectivePrice(product, customerType).toLocaleString()} <span className="text-xs font-normal text-on-surface-variant">/ {product.unit}</span>
         </p>
         <div className="flex items-center gap-1.5 mt-0.5">
           <span className={`w-1.5 h-1.5 rounded-full ${stockColor} shrink-0`} />
@@ -179,7 +179,10 @@ function ProductCard({ product, isFavorite, onToggleFavorite }: { product: Produ
 export default function CatalogPage() {
   const { locale, t } = useLanguage();
   const { products, loading } = useProducts();
+  const { branches } = useBranches();
   const { branchId } = useBranchContext();
+  const currentBranch = branches.find((b) => b.id === branchId);
+  const customerType: CustomerType = currentBranch?.customerType === 'external' ? 'external' : 'internal';
   const [search, setSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<'all' | ProductCategory | 'favorites'>('all');
   const [sort, setSort] = useState<SortOption>('name');
@@ -275,10 +278,10 @@ export default function CatalogPage() {
         list.sort((a, b) => locale === 'th' ? a.nameTh.localeCompare(b.nameTh, 'th') : a.nameEn.localeCompare(b.nameEn, 'en'));
         break;
       case 'price_asc':
-        list.sort((a, b) => a.price - b.price);
+        list.sort((a, b) => effectivePrice(a, customerType) - effectivePrice(b, customerType));
         break;
       case 'price_desc':
-        list.sort((a, b) => b.price - a.price);
+        list.sort((a, b) => effectivePrice(b, customerType) - effectivePrice(a, customerType));
         break;
       case 'stock':
         list.sort((a, b) => a.stock - b.stock);
@@ -286,7 +289,7 @@ export default function CatalogPage() {
     }
 
     return list;
-  }, [products, search, selectedCategory, sort, locale, branchId, favoriteSet]);
+  }, [products, search, selectedCategory, sort, locale, branchId, favoriteSet, customerType]);
 
 
   return (
@@ -385,6 +388,7 @@ export default function CatalogPage() {
               product={product}
               isFavorite={favoriteSet.has(product.id)}
               onToggleFavorite={() => handleToggleFavorite(product.id)}
+              customerType={customerType}
             />
           ))}
         </div>

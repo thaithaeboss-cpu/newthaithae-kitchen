@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useLanguage } from '@/lib/language-context';
 import { useBranches } from '@/lib/useFirestore';
-import { addBranch, updateBranch, deleteBranch } from '@/lib/firestore';
+import { addBranch, updateBranch, deleteBranch, type CustomerType } from '@/lib/firestore';
 
 type BranchFormData = {
   code: string;
@@ -17,6 +17,7 @@ type BranchFormData = {
   openTime: string;
   closeTime: string;
   ownerEmail?: string;
+  customerType: CustomerType;
 };
 
 const emptyBranch: BranchFormData = {
@@ -31,6 +32,7 @@ const emptyBranch: BranchFormData = {
   openTime: '08:00',
   closeTime: '22:00',
   ownerEmail: '',
+  customerType: 'internal',
 };
 
 export default function BranchesPage() {
@@ -60,6 +62,7 @@ export default function BranchesPage() {
       openTime: b.openTime,
       closeTime: b.closeTime,
       ownerEmail: (b as { ownerEmail?: string }).ownerEmail ?? '',
+      customerType: (b as { customerType?: CustomerType }).customerType ?? 'internal',
     });
     setShowModal(true);
   };
@@ -157,13 +160,20 @@ export default function BranchesPage() {
                     <p className="text-xs text-on-surface-variant">{locale === 'th' ? b.nameEn : b.nameTh}</p>
                   </div>
                 </div>
-                <span
-                  className={`px-2.5 py-1 text-xs font-semibold rounded-full ${
-                    b.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
-                  }`}
-                >
-                  {b.isActive ? t('status_open') : t('status_closed')}
-                </span>
+                <div className="flex items-center gap-1.5">
+                  {((b as { customerType?: CustomerType }).customerType ?? 'internal') === 'external' && (
+                    <span className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider rounded-full bg-amber-100 text-amber-800">
+                      {locale === 'th' ? 'ลูกค้านอก' : 'External'}
+                    </span>
+                  )}
+                  <span
+                    className={`px-2.5 py-1 text-xs font-semibold rounded-full ${
+                      b.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+                    }`}
+                  >
+                    {b.isActive ? t('status_open') : t('status_closed')}
+                  </span>
+                </div>
               </div>
 
               <div className="space-y-2 text-sm">
@@ -277,6 +287,37 @@ export default function BranchesPage() {
                   {locale === 'th'
                     ? 'อีเมลนี้ต้องถูกสร้างใน Firebase Console ก่อน พนักงานสาขาใช้เข้าสู่ระบบ'
                     : 'This email must be created in Firebase Console first. Branch staff uses it to log in.'}
+                </p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-on-surface mb-1">
+                  {locale === 'th' ? 'ประเภทลูกค้า' : 'Customer type'}
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {(['internal', 'external'] as const).map((type) => {
+                    const selected = formData.customerType === type;
+                    const labelTh = type === 'internal' ? 'ลูกค้าใน (สาขาของเรา)' : 'ลูกค้านอก';
+                    const labelEn = type === 'internal' ? 'Internal (own branch)' : 'External';
+                    return (
+                      <button
+                        key={type}
+                        type="button"
+                        onClick={() => setFormData({ ...formData, customerType: type })}
+                        className={`px-3 py-2.5 rounded-lg border text-sm font-medium transition-colors text-left ${
+                          selected
+                            ? 'border-primary bg-primary/10 text-primary'
+                            : 'border-outline-variant/50 bg-surface text-on-surface-variant hover:bg-surface-container'
+                        }`}
+                      >
+                        {locale === 'th' ? labelTh : labelEn}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[11px] text-on-surface-variant mt-1">
+                  {locale === 'th'
+                    ? 'ลูกค้านอกจะเห็นราคาที่ตั้งไว้แยกในสินค้า (ถ้าไม่ตั้งจะใช้ราคาเดียวกับลูกค้าใน)'
+                    : 'External customers see the external price set per product (falls back to the default price).'}
                 </p>
               </div>
               <div>

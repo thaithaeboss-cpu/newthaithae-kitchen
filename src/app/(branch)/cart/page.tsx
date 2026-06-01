@@ -20,6 +20,7 @@ export default function CartPage() {
     updateQuantity,
     removeFromCart,
     clearCart,
+    unitPriceFor,
   } = useCart();
 
   const { locale, t } = useLanguage();
@@ -48,15 +49,18 @@ export default function CartPage() {
         branchId: selectedBranch,
         branchName,
         status: 'new',
-        items: cartItems.map((item) => ({
-          productId: item.productId,
-          nameTh: item.product.nameTh,
-          nameEn: item.product.nameEn,
-          quantity: item.quantity,
-          unit: item.product.unit,
-          unitPrice: item.product.price,
-          total: item.product.price * item.quantity,
-        })),
+        items: cartItems.map((item) => {
+          const unitPrice = unitPriceFor(item.product);
+          return {
+            productId: item.productId,
+            nameTh: item.product.nameTh,
+            nameEn: item.product.nameEn,
+            quantity: item.quantity,
+            unit: item.product.unit,
+            unitPrice,
+            total: unitPrice * item.quantity,
+          };
+        }),
         subtotal: cartSubtotal,
         vat: 0,
         deliveryFee: 0,
@@ -136,7 +140,8 @@ export default function CartPage() {
       {/* ---- Cart items ---- */}
       <div className="space-y-3">
         {cartItems.map((item) => {
-          const lineTotal = item.product.price * item.quantity;
+          const unitPrice = unitPriceFor(item.product);
+          const lineTotal = unitPrice * item.quantity;
           return (
             <div
               key={item.productId}
@@ -157,7 +162,7 @@ export default function CartPage() {
                       {locale === 'th' ? item.product.nameTh : item.product.nameEn}
                     </h3>
                     <p className="text-xs text-on-surface-variant mt-0.5">
-                      ฿{item.product.price.toLocaleString()} / {locale === 'th' ? item.product.unitTh : item.product.unit}
+                      ฿{unitPrice.toLocaleString()} / {locale === 'th' ? item.product.unitTh : item.product.unit}
                     </p>
                   </div>
                   <button
@@ -250,7 +255,7 @@ export default function CartPage() {
                     {locale === 'th' ? item.product.nameTh : item.product.nameEn} x{item.quantity}
                   </span>
                   <span className="text-on-surface-variant">
-                    ฿{(item.product.price * item.quantity).toLocaleString()}
+                    ฿{(unitPriceFor(item.product) * item.quantity).toLocaleString()}
                   </span>
                 </div>
               ))}

@@ -17,7 +17,9 @@ import { doc, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { useState, useEffect } from 'react';
 import type { Announcement } from '@/lib/firestore';
+import { effectivePrice, type CustomerType } from '@/lib/firestore';
 import { useBranchContext } from '@/lib/branch-context';
+import { useBranches } from '@/lib/useFirestore';
 
 // --- page component ----------------------------------------------------
 
@@ -32,6 +34,10 @@ export default function BranchDashboard() {
   const { stats, loading: loadingStats } = useDashboardStats(branchId);
   const { isOpen: orderIsOpen, mode: orderMode, openTime: orderOpenTime, closeTime: orderCloseTime } = useOrderWindow();
   const { products: allProducts } = useProducts();
+  const { branches } = useBranches();
+  const currentBranch = branches.find((b) => b.id === branchId);
+  const customerType: CustomerType =
+    currentBranch?.customerType === 'external' ? 'external' : 'internal';
 
   // Selected announcement for modal
   const [selectedAnnouncement, setSelectedAnnouncement] = useState<Announcement | null>(null);
@@ -431,7 +437,7 @@ export default function BranchDashboard() {
                 <p className="text-sm font-bold text-white">
                   {locale === 'th' ? item.nameTh : item.nameEn}
                 </p>
-                <p className="text-xs text-white/70 mt-0.5">฿{item.price.toLocaleString()}</p>
+                <p className="text-xs text-white/70 mt-0.5">฿{effectivePrice(item, customerType).toLocaleString()}</p>
               </div>
             </div>
           ))}
