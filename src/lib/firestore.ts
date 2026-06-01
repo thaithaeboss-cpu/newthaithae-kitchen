@@ -121,13 +121,16 @@ export interface Order {
   packedByUid?: string;
   packedByName?: string;
   packedAt?: Date;
+  deliveredByUid?: string;
+  deliveredByName?: string;
+  deliveredAt?: Date;
   timeline?: OrderTimelineEntry[];
   createdAt: Date;
   updatedAt: Date;
 }
 
 // Staff profile for factory/kitchen workers — links a Firebase Auth user to a display name + role
-export type StaffRole = 'admin' | 'kitchen' | 'packer' | 'both';
+export type StaffRole = 'admin' | 'kitchen' | 'packer' | 'both' | 'delivery';
 
 export interface Staff {
   id: string;           // Firestore doc id (we use the Firebase Auth uid so lookup is O(1))
@@ -726,6 +729,11 @@ export async function updateOrderStatus(
       updateData.packedByUid = actor.uid;
       updateData.packedByName = actor.name;
       updateData.packedAt = Timestamp.fromDate(now);
+    }
+    if (entry.action === 'delivered' && !current?.deliveredByUid) {
+      updateData.deliveredByUid = actor.uid;
+      updateData.deliveredByName = actor.name;
+      updateData.deliveredAt = Timestamp.fromDate(now);
     }
 
     // Timeline uses plain JS Date (Firestore converts to Timestamp inside arrays)

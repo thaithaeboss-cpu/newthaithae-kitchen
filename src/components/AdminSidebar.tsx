@@ -99,6 +99,11 @@ export default function AdminSidebar() {
     window.location.href = "/admin/login/";
   }
 
+  // Delivery role never sees the admin chrome — the layout already routes
+  // them to /admin/delivery, but if they hit any other admin page for a
+  // beat before redirect kicks in, we still hide the sidebar entirely.
+  if (staff?.role === "delivery") return null;
+
   // Role-based nav filter: only admins see the Staff management page
   const visibleSections = navSectionDefs.map((section) => ({
     ...section,

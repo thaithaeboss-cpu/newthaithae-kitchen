@@ -450,7 +450,7 @@ export default function FulfillmentPage() {
               </div>
 
               {/* Staff action badges */}
-              {(order.acceptedByName || order.packedByName) && (
+              {(order.acceptedByName || order.packedByName || order.deliveredByName) && (
                 <div className="mt-3 flex flex-wrap gap-2">
                   {order.acceptedByName && (
                     <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700 text-xs font-semibold">
@@ -470,6 +470,17 @@ export default function FulfillmentPage() {
                       {order.packedAt && (
                         <span className="text-emerald-500/70 font-normal">
                           · {formatTime(order.packedAt)}
+                        </span>
+                      )}
+                    </span>
+                  )}
+                  {order.deliveredByName && (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-purple-50 text-purple-700 text-xs font-semibold">
+                      <span className="material-symbols-outlined text-[14px]">local_shipping</span>
+                      {t('delivered_by')}: {order.deliveredByName}
+                      {order.deliveredAt && (
+                        <span className="text-purple-500/70 font-normal">
+                          · {formatTime(order.deliveredAt)}
                         </span>
                       )}
                     </span>

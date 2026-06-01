@@ -21,9 +21,23 @@ export default function AdminLayout({
   // wrapped with AuthGate and loops on the loading spinner after logout.
   const normalizedPath = pathname?.replace(/\/$/, '') ?? '';
   const isLoginPage = normalizedPath === '/admin/login';
+  const isDeliveryPage = normalizedPath === '/admin/delivery';
 
   if (isLoginPage) {
     return <LanguageProvider>{children}</LanguageProvider>;
+  }
+
+  // Delivery role gets a single-page UI without the admin sidebar/chrome.
+  if (isDeliveryPage) {
+    return (
+      <LanguageProvider>
+        <AuthGate>
+          <StaffProvider>
+            <StaffProfileGate>{children}</StaffProfileGate>
+          </StaffProvider>
+        </AuthGate>
+      </LanguageProvider>
+    );
   }
 
   return (
@@ -49,6 +63,21 @@ export default function AdminLayout({
 // (or add the profile themselves first).
 function StaffProfileGate({ children }: { children: React.ReactNode }) {
   const { staff, loading, missingProfile } = useStaff();
+  const router = useRouter();
+  const pathname = usePathname();
+  const normalizedPath = pathname?.replace(/\/$/, '') ?? '';
+
+  // Delivery staff can only see /admin/delivery — bounce them if they land
+  // elsewhere under /admin/* (e.g. by typing a URL directly).
+  useEffect(() => {
+    if (
+      staff?.role === 'delivery' &&
+      normalizedPath !== '/admin/delivery' &&
+      normalizedPath !== '/admin/login'
+    ) {
+      router.replace('/admin/delivery/');
+    }
+  }, [staff?.role, normalizedPath, router]);
 
   if (loading) {
     return (
@@ -62,6 +91,21 @@ function StaffProfileGate({ children }: { children: React.ReactNode }) {
 
   if (missingProfile && !staff) {
     return <ProfileBootstrap />;
+  }
+
+  // While redirecting, render nothing so the unauthorized page doesn't flash.
+  if (
+    staff?.role === 'delivery' &&
+    normalizedPath !== '/admin/delivery' &&
+    normalizedPath !== '/admin/login'
+  ) {
+    return (
+      <div className="min-h-screen bg-surface flex items-center justify-center">
+        <span className="material-symbols-outlined text-on-surface-variant text-[40px] animate-pulse">
+          local_shipping
+        </span>
+      </div>
+    );
   }
 
   return <>{children}</>;

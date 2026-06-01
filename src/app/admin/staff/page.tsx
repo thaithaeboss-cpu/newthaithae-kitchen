@@ -18,6 +18,7 @@ const roleLabels: Record<StaffRole, { th: string; en: string }> = {
   kitchen: { th: 'ครัว', en: 'Kitchen' },
   packer: { th: 'แพ็ค', en: 'Packer' },
   both: { th: 'ครัว+แพ็ค', en: 'Kitchen + Packer' },
+  delivery: { th: 'คนส่ง', en: 'Delivery' },
 };
 
 // Simple helper: Firestore doc id is the Firebase Auth uid. Admin must create
