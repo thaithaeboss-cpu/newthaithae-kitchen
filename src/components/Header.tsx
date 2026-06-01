@@ -25,9 +25,9 @@ function timeAgo(date: Date, locale: string): string {
 
 export default function Header() {
   const { locale, setLocale, t } = useLanguage();
-  const { notifications, unreadCount, markAllRead, clearAll } = useNotifications();
   const { branches } = useBranches();
   const { branchId } = useBranchContext();
+  const { notifications, unreadCount, markAllRead, clearAll } = useNotifications({ branchId });
   const currentBranch = branches.find((b) => b.id === branchId);
   const branchName = currentBranch ? (locale === "th" ? currentBranch.nameTh : currentBranch.nameEn || currentBranch.nameTh) : "";
   const [showDropdown, setShowDropdown] = useState(false);
@@ -152,37 +152,65 @@ export default function Header() {
                       </p>
                     </div>
                   ) : (
-                    notifications.map((n) => (
-                      <div
-                        key={n.id}
-                        className={`px-4 py-3 border-b border-gray-50 hover:bg-gray-50 transition-colors ${
-                          !n.read ? "bg-blue-50/50" : ""
-                        }`}
-                      >
-                        <div className="flex items-start gap-3">
-                          <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
-                            <span className="material-symbols-outlined text-primary text-base">
-                              {n.type === "new_order" ? "shopping_bag" : "receipt"}
-                            </span>
+                    notifications.map((n) => {
+                      const cfg =
+                        n.type === "order_packed"
+                          ? {
+                              icon: "inventory_2",
+                              tint: "bg-emerald-100 text-emerald-700",
+                              title: locale === "th" ? "ออเดอร์แพ็คเสร็จแล้ว" : "Order packed",
+                            }
+                          : n.type === "order_delivered"
+                            ? {
+                                icon: "local_shipping",
+                                tint: "bg-purple-100 text-purple-700",
+                                title: locale === "th" ? "ส่งถึงสาขาแล้ว" : "Delivered to branch",
+                              }
+                            : {
+                                icon: "shopping_bag",
+                                tint: "bg-primary/10 text-primary",
+                                title: locale === "th" ? "ออเดอร์ใหม่" : "New Order",
+                              };
+                      return (
+                        <div
+                          key={n.id}
+                          className={`px-4 py-3 border-b border-gray-50 hover:bg-gray-50 transition-colors ${
+                            !n.read ? "bg-blue-50/50" : ""
+                          }`}
+                        >
+                          <div className="flex items-start gap-3">
+                            <div className={`w-8 h-8 rounded-full ${cfg.tint} flex items-center justify-center shrink-0 mt-0.5`}>
+                              <span className="material-symbols-outlined text-base">
+                                {cfg.icon}
+                              </span>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-semibold text-gray-900">
+                                {cfg.title}{" "}
+                                <span className="font-mono text-primary">#{n.orderNumber}</span>
+                              </p>
+                              {n.actorName ? (
+                                <p className="text-xs text-gray-500 mt-0.5">
+                                  {locale === "th" ? "โดย" : "by"}{" "}
+                                  <span className="font-semibold text-gray-700">{n.actorName}</span>
+                                  {" · ฿"}{formatCurrency(n.total || 0)}
+                                </p>
+                              ) : (
+                                <p className="text-xs text-gray-500 mt-0.5">
+                                  {n.branchName} · ฿{formatCurrency(n.total || 0)}
+                                </p>
+                              )}
+                              <p className="text-[10px] text-gray-400 mt-1">
+                                {timeAgo(n.timestamp, locale)}
+                              </p>
+                            </div>
+                            {!n.read && (
+                              <div className="w-2 h-2 rounded-full bg-blue-500 shrink-0 mt-2" />
+                            )}
                           </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-semibold text-gray-900">
-                              {locale === "th" ? "ออเดอร์ใหม่" : "New Order"}{" "}
-                              <span className="font-mono text-primary">#{n.orderNumber}</span>
-                            </p>
-                            <p className="text-xs text-gray-500 mt-0.5">
-                              {n.branchName} · ฿{formatCurrency(n.total || 0)}
-                            </p>
-                            <p className="text-[10px] text-gray-400 mt-1">
-                              {timeAgo(n.timestamp, locale)}
-                            </p>
-                          </div>
-                          {!n.read && (
-                            <div className="w-2 h-2 rounded-full bg-blue-500 shrink-0 mt-2" />
-                          )}
                         </div>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
               </div>

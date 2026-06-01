@@ -1071,23 +1071,32 @@ export function usePaymentsByInvoice(invoiceId: string) {
 
 export interface AppNotification {
   id: string;
-  type: 'new_order' | 'order_status' | 'payment';
+  type: 'new_order' | 'order_packed' | 'order_delivered' | 'order_status' | 'payment';
   title: string;
   message: string;
   orderId?: string;
   orderNumber?: string;
   branchName?: string;
   total?: number;
+  actorName?: string;
   timestamp: Date;
   read: boolean;
 }
 
-const LAST_SEEN_KEY = 'admin_notif_last_seen_ts';
+const ADMIN_LAST_SEEN_KEY = 'admin_notif_last_seen_ts';
+const branchLastSeenKey = (branchId: string) => `branch_notif_last_seen_${branchId}`;
 
-export function useNotifications() {
+// Admin (no branchId): listens for new orders across all branches.
+// Branch (with branchId): listens for status updates (packed, delivered)
+// on their own orders only — they don't get notified about their own placements.
+export function useNotifications(opts?: { branchId?: string }) {
+  const branchId = opts?.branchId;
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const knownOrderIdsRef = useRef<Set<string>>(new Set());
+  // Tracks the last status we've already notified for each order, so a
+  // re-emit of the same snapshot doesn't fire a duplicate notification.
+  const lastNotifiedStatusRef = useRef<Map<string, string>>(new Map());
   const lastSeenRef = useRef<number>(0);
 
   useEffect(() => {
@@ -1095,49 +1104,105 @@ export function useNotifications() {
       return;
     }
 
-    // Load last-seen timestamp from localStorage (orders newer than this are unread)
+    // Reset per-scope refs whenever branchId changes (switching branches).
+    knownOrderIdsRef.current = new Set();
+    lastNotifiedStatusRef.current = new Map();
+
+    const storageKey = branchId ? branchLastSeenKey(branchId) : ADMIN_LAST_SEEN_KEY;
     if (typeof window !== 'undefined') {
-      const saved = window.localStorage.getItem(LAST_SEEN_KEY);
+      const saved = window.localStorage.getItem(storageKey);
       lastSeenRef.current = saved ? parseInt(saved, 10) : Date.now();
       if (!saved) {
         // First time ever — set baseline so we don't flood with old orders
-        window.localStorage.setItem(LAST_SEEN_KEY, String(lastSeenRef.current));
+        window.localStorage.setItem(storageKey, String(lastSeenRef.current));
       }
     }
 
-    const q = query(
-      collection(db, 'orders'),
-      orderBy('createdAt', 'desc'),
-      firestoreLimit(20)
-    );
+    const constraints = branchId
+      ? [where('branchId', '==', branchId), orderBy('createdAt', 'desc'), firestoreLimit(20)]
+      : [orderBy('createdAt', 'desc'), firestoreLimit(20)];
+    const q = query(collection(db, 'orders'), ...constraints);
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const newNotifs: AppNotification[] = [];
       snapshot.docChanges().forEach((change) => {
-        if (change.type !== 'added') return;
-        if (knownOrderIdsRef.current.has(change.doc.id)) return;
-        knownOrderIdsRef.current.add(change.doc.id);
-
         const data = change.doc.data();
+        const status = (data.status as string) || '';
+        const orderDocId = change.doc.id;
+
         const createdAt = data.createdAt instanceof Timestamp
           ? data.createdAt.toDate()
           : new Date(data.createdAt);
+        const updatedAt = data.updatedAt instanceof Timestamp
+          ? data.updatedAt.toDate()
+          : data.updatedAt
+            ? new Date(data.updatedAt)
+            : createdAt;
 
-        // Only notify for orders newer than last-seen
-        if (createdAt.getTime() <= lastSeenRef.current) return;
+        if (change.type === 'added') {
+          if (knownOrderIdsRef.current.has(orderDocId)) return;
+          knownOrderIdsRef.current.add(orderDocId);
+          // Seed the status tracker so we don't re-fire on the next snapshot.
+          lastNotifiedStatusRef.current.set(orderDocId, status);
 
-        newNotifs.push({
-          id: `order-${change.doc.id}`,
-          type: 'new_order',
-          title: '',
-          message: '',
-          orderId: change.doc.id,
-          orderNumber: data.orderId || '',
-          branchName: data.branchName || '',
-          total: data.total || 0,
-          timestamp: createdAt,
-          read: false,
-        });
+          // Branch side doesn't notify itself about its own new order.
+          if (branchId) return;
+          if (createdAt.getTime() <= lastSeenRef.current) return;
+
+          newNotifs.push({
+            id: `order-${orderDocId}`,
+            type: 'new_order',
+            title: '',
+            message: '',
+            orderId: orderDocId,
+            orderNumber: data.orderId || '',
+            branchName: data.branchName || '',
+            total: data.total || 0,
+            timestamp: createdAt,
+            read: false,
+          });
+          return;
+        }
+
+        if (change.type === 'modified') {
+          const prevStatus = lastNotifiedStatusRef.current.get(orderDocId);
+          if (prevStatus === status) return; // no transition we care about
+          lastNotifiedStatusRef.current.set(orderDocId, status);
+
+          // Branch users only — admin sidebar keeps showing just new_order.
+          if (!branchId) return;
+          if (updatedAt.getTime() <= lastSeenRef.current) return;
+
+          if (status === 'dispatched') {
+            newNotifs.push({
+              id: `packed-${orderDocId}`,
+              type: 'order_packed',
+              title: '',
+              message: '',
+              orderId: orderDocId,
+              orderNumber: data.orderId || '',
+              branchName: data.branchName || '',
+              total: data.total || 0,
+              actorName: data.packedByName || '',
+              timestamp: updatedAt,
+              read: false,
+            });
+          } else if (status === 'delivered') {
+            newNotifs.push({
+              id: `delivered-${orderDocId}`,
+              type: 'order_delivered',
+              title: '',
+              message: '',
+              orderId: orderDocId,
+              orderNumber: data.orderId || '',
+              branchName: data.branchName || '',
+              total: data.total || 0,
+              actorName: data.deliveredByName || '',
+              timestamp: updatedAt,
+              read: false,
+            });
+          }
+        }
       });
 
       if (newNotifs.length > 0) {
@@ -1152,7 +1217,7 @@ export function useNotifications() {
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [branchId]);
 
   const markAllRead = useCallback(() => {
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
@@ -1160,9 +1225,10 @@ export function useNotifications() {
     const now = Date.now();
     lastSeenRef.current = now;
     if (typeof window !== 'undefined') {
-      window.localStorage.setItem(LAST_SEEN_KEY, String(now));
+      const key = branchId ? branchLastSeenKey(branchId) : ADMIN_LAST_SEEN_KEY;
+      window.localStorage.setItem(key, String(now));
     }
-  }, []);
+  }, [branchId]);
 
   const clearAll = useCallback(() => {
     setNotifications([]);
@@ -1170,9 +1236,10 @@ export function useNotifications() {
     const now = Date.now();
     lastSeenRef.current = now;
     if (typeof window !== 'undefined') {
-      window.localStorage.setItem(LAST_SEEN_KEY, String(now));
+      const key = branchId ? branchLastSeenKey(branchId) : ADMIN_LAST_SEEN_KEY;
+      window.localStorage.setItem(key, String(now));
     }
-  }, []);
+  }, [branchId]);
 
   return { notifications, unreadCount, markAllRead, clearAll };
 }
