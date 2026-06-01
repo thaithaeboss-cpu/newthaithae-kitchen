@@ -529,9 +529,32 @@ export default function ProductsPage() {
               {/* Branch visibility */}
               {branches.length > 0 && (
                 <div>
-                  <label className="block text-sm font-medium text-on-surface mb-1">
-                    {locale === 'th' ? 'สาขาที่เห็นสินค้านี้' : 'Visible to branches'}
-                  </label>
+                  <div className="flex items-baseline justify-between mb-1">
+                    <label className="block text-sm font-medium text-on-surface">
+                      {locale === 'th' ? 'สาขาที่เห็นสินค้านี้' : 'Visible to branches'}
+                    </label>
+                    {(() => {
+                      const allIds = branches.map((b) => b.id);
+                      const selected = formData.visibleToBranches ?? [];
+                      const allChecked = selected.length === allIds.length;
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFormData({
+                              ...formData,
+                              visibleToBranches: allChecked ? [] : allIds,
+                            });
+                          }}
+                          className="text-xs font-semibold text-primary hover:underline"
+                        >
+                          {allChecked
+                            ? (locale === 'th' ? 'ยกเลิกทั้งหมด' : 'Clear all')
+                            : (locale === 'th' ? 'เลือกทั้งหมด' : 'Select all')}
+                        </button>
+                      );
+                    })()}
+                  </div>
                   <p className="text-xs text-on-surface-variant mb-2">
                     {locale === 'th'
                       ? 'ถ้าไม่เลือก = ทุกสาขาเห็น'
