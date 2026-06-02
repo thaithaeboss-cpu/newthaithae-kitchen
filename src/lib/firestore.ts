@@ -102,7 +102,7 @@ export type OrderStatus =
 
 // Staff audit trail: who did what, when
 export interface OrderTimelineEntry {
-  action: 'accepted' | 'status_changed' | 'packed' | 'dispatched' | 'delivered' | 'cancelled' | 'note';
+  action: 'accepted' | 'status_changed' | 'packed' | 'dispatched' | 'delivered' | 'cancelled' | 'revised' | 'note';
   fromStatus?: OrderStatus;
   toStatus?: OrderStatus;
   staffUid?: string;
@@ -770,6 +770,139 @@ export async function updateOrder(id: string, data: Partial<Omit<Order, 'id' | '
     ...data,
     updatedAt: serverTimestamp(),
   });
+}
+
+// Revise an existing order's line items downward only. Each entry in
+// `newItems` must mirror an existing order item, with `quantity` reduced
+// (or set to 0 to drop it). The function:
+//   • rejects any attempt to increase quantity or add new items
+//   • recomputes subtotal/vat/total
+//   • restocks the difference for each reduced line (best-effort)
+//   • appends a 'revised' timeline entry summarising the change
+//   • if every line ends at 0, auto-cancels the order
+// Pricing fields (unitPrice) come from the original items — they're a
+// snapshot so we don't accidentally re-price an in-flight order.
+export async function reviseOrderItems(
+  orderDocId: string,
+  desiredQuantities: Record<string, number>, // productId -> new qty (0 to remove)
+  actor: { uid?: string; name: string },
+): Promise<{ cancelled: boolean }> {
+  const docRef = doc(db, 'orders', orderDocId);
+  const snap = await getDoc(docRef);
+  if (!snap.exists()) throw new Error('Order not found');
+  const current = snap.data() as Order;
+
+  if (current.status === 'delivered' || current.status === 'cancelled') {
+    throw new Error('Cannot edit a delivered or cancelled order');
+  }
+
+  // Build the revised items list + collect diffs for stock restock.
+  type Diff = { productId: string; productName: string; from: number; to: number };
+  const diffs: Diff[] = [];
+  const revisedItems: OrderItem[] = [];
+
+  for (const item of current.items) {
+    const requested = desiredQuantities[item.productId];
+    const newQty = requested === undefined ? item.quantity : Math.max(0, Math.floor(requested));
+    if (newQty > item.quantity) {
+      throw new Error(
+        `Cannot increase quantity for "${item.nameTh || item.nameEn}". Reduce only.`,
+      );
+    }
+    if (newQty !== item.quantity) {
+      diffs.push({
+        productId: item.productId,
+        productName: item.nameTh || item.nameEn,
+        from: item.quantity,
+        to: newQty,
+      });
+    }
+    if (newQty > 0) {
+      revisedItems.push({
+        ...item,
+        quantity: newQty,
+        total: item.unitPrice * newQty,
+      });
+    }
+  }
+
+  // Nothing actually changed — bail out as a no-op so we don't pollute the timeline.
+  if (diffs.length === 0) {
+    return { cancelled: false };
+  }
+
+  const subtotal = revisedItems.reduce((s, it) => s + it.total, 0);
+  const vat = subtotal * 0.07;
+  const total = subtotal + vat;
+  const allRemoved = revisedItems.length === 0;
+  const now = new Date();
+
+  // Build the change summary for the timeline note.
+  const summary = diffs
+    .map((d) =>
+      d.to === 0
+        ? `${d.productName}: removed`
+        : `${d.productName}: ${d.from} → ${d.to}`,
+    )
+    .join(', ');
+
+  const reviseEntry: OrderTimelineEntry = {
+    action: 'revised',
+    staffUid: actor.uid,
+    staffName: actor.name,
+    at: now,
+    note: summary,
+  };
+
+  const updateData: Record<string, unknown> = {
+    items: revisedItems,
+    subtotal,
+    vat,
+    total,
+    updatedAt: serverTimestamp(),
+    timeline: arrayUnion({ ...reviseEntry, at: Timestamp.fromDate(now) }),
+  };
+
+  if (allRemoved) {
+    updateData.status = 'cancelled';
+    updateData.actualDelivery = now.toISOString();
+    const cancelEntry: OrderTimelineEntry = {
+      action: 'cancelled',
+      fromStatus: current.status,
+      toStatus: 'cancelled',
+      staffUid: actor.uid,
+      staffName: actor.name,
+      at: now,
+      note: 'Auto-cancelled: all items removed',
+    };
+    // arrayUnion called twice in same update isn't allowed; we already
+    // included the revised entry above, so collapse both into one update
+    // using a second arrayUnion isn't possible — append manually.
+    updateData.timeline = arrayUnion(
+      { ...reviseEntry, at: Timestamp.fromDate(now) },
+      { ...cancelEntry, at: Timestamp.fromDate(now) },
+    );
+  }
+
+  await updateDoc(docRef, updateData);
+
+  // Best-effort restock of the reduced quantities. Don't block on failure
+  // — order is already revised in Firestore.
+  await Promise.all(
+    diffs.map((d) =>
+      d.from > d.to
+        ? updateStock(
+            d.productId,
+            d.from - d.to,
+            `Revise #${current.orderId} by ${actor.name}`,
+          ).catch((err) =>
+            console.error(`Failed to restock ${d.productName}:`, err),
+          )
+        : Promise.resolve(),
+    ),
+  );
+
+  return { cancelled: allRemoved };
 }
 
 export async function getRecentOrders(count: number = 10): Promise<Order[]> {

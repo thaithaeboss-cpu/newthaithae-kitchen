@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useRef, useEffect } from "react";
 import { useLanguage } from "@/lib/language-context";
 import { useNotifications, useBranches } from "@/lib/useFirestore";
@@ -171,10 +172,17 @@ export default function Header() {
                                 tint: "bg-primary/10 text-primary",
                                 title: locale === "th" ? "ออเดอร์ใหม่" : "New Order",
                               };
+                      // Branch users tap a notification to jump to the
+                      // matching order in their history view.
+                      const href = n.orderNumber
+                        ? `/history/?order=${encodeURIComponent(n.orderNumber)}`
+                        : "/history/";
                       return (
-                        <div
+                        <Link
                           key={n.id}
-                          className={`px-4 py-3 border-b border-gray-50 hover:bg-gray-50 transition-colors ${
+                          href={href}
+                          onClick={() => setShowDropdown(false)}
+                          className={`block px-4 py-3 border-b border-gray-50 hover:bg-gray-50 transition-colors ${
                             !n.read ? "bg-blue-50/50" : ""
                           }`}
                         >
@@ -208,7 +216,7 @@ export default function Header() {
                               <div className="w-2 h-2 rounded-full bg-blue-500 shrink-0 mt-2" />
                             )}
                           </div>
-                        </div>
+                        </Link>
                       );
                     })
                   )}

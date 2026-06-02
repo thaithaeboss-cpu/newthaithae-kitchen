@@ -7,6 +7,7 @@ import type { Order, OrderStatus, AppSettings } from '@/lib/firestore';
 import { useLanguage } from '@/lib/language-context';
 import { useActor } from '@/lib/staff-context';
 import type { TranslationKey } from '@/lib/i18n';
+import EditOrderItemsModal from '@/components/EditOrderItemsModal';
 
 type FulfillmentTab = 'new' | 'preparing' | 'dispatched';
 
@@ -52,6 +53,7 @@ export default function FulfillmentPage() {
   const { t, locale } = useLanguage();
   const [activeTab, setActiveTab] = useState<FulfillmentTab>('new');
   const [expandedOrder, setExpandedOrder] = useState<string | null>(null);
+  const [editingOrder, setEditingOrder] = useState<Order | null>(null);
   const [checkedItems, setCheckedItems] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -150,14 +152,14 @@ export default function FulfillmentPage() {
 
     const co = settings;
     const bankHtml = (co?.bankAccountNumber)
-      ? `<div style="margin-top:24px;padding:14px 16px;background:#f0fdf4;border-radius:8px;border:1px solid #bbf7d0;">
-          <p style="margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#166534;font-weight:700;">${locale === 'th' ? 'ข้อมูลการชำระเงิน' : 'Payment Details'}</p>
-          <table style="width:100%;font-size:12px;border-collapse:collapse;">
-            ${co.bankName ? `<tr><td style="color:#555;padding:2px 0;">${locale === 'th' ? 'ธนาคาร' : 'Bank'}</td><td style="text-align:right;font-weight:600;">${co.bankName}</td></tr>` : ''}
-            ${co.bankAccountName ? `<tr><td style="color:#555;padding:2px 0;">${locale === 'th' ? 'ชื่อบัญชี' : 'Account Name'}</td><td style="text-align:right;font-weight:600;">${co.bankAccountName}</td></tr>` : ''}
-            ${co.bankBsb ? `<tr><td style="color:#555;padding:2px 0;">BSB</td><td style="text-align:right;font-weight:600;font-family:monospace;">${co.bankBsb}</td></tr>` : ''}
-            <tr><td style="color:#555;padding:2px 0;">${locale === 'th' ? 'เลขบัญชี' : 'Account No.'}</td><td style="text-align:right;font-weight:700;font-family:monospace;font-size:14px;color:#166534;">${co.bankAccountNumber}</td></tr>
-          </table>
+      ? `<div style="margin-top:10px;padding:5px 10px;background:#f0fdf4;border-radius:6px;border:1px solid #bbf7d0;font-size:10px;line-height:1.5;color:#374151;">
+          <span style="font-weight:700;color:#166534;text-transform:uppercase;letter-spacing:.04em;margin-right:6px;">${locale === 'th' ? 'การชำระ' : 'Payment'}</span>
+          ${[
+            co.bankName ? `<strong>${co.bankName}</strong>` : null,
+            co.bankAccountName,
+            co.bankBsb ? `BSB <span style="font-family:monospace;">${co.bankBsb}</span>` : null,
+            `${locale === 'th' ? 'เลข' : 'Acct'} <span style="font-family:monospace;font-weight:700;color:#166534;">${co.bankAccountNumber}</span>`,
+          ].filter(Boolean).join(' · ')}
         </div>`
       : '';
 
@@ -549,18 +551,30 @@ export default function FulfillmentPage() {
               {/* Expanded Items Modal/Drawer */}
               {isExpanded && (
                 <div className="mt-5 pt-5 border-t border-outline-variant/50">
-                  <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center justify-between mb-4 gap-2">
                     <h4 className="text-sm font-semibold text-on-surface flex items-center gap-2">
                       <span className="material-symbols-outlined text-[18px]">checklist</span>
                       {t('items_checklist')} - #{order.orderId}
                     </h4>
-                    <button
-                      onClick={() => printOrderSlip(order)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-container text-on-surface-variant text-xs font-medium hover:bg-surface-container-high transition-colors"
-                    >
-                      <span className="material-symbols-outlined text-[16px]">print</span>
-                      {t('print_order')}
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      {order.status !== 'delivered' && order.status !== 'cancelled' && actor && (
+                        <button
+                          type="button"
+                          onClick={() => setEditingOrder(order)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-50 text-amber-800 text-xs font-medium hover:bg-amber-100 transition-colors"
+                        >
+                          <span className="material-symbols-outlined text-[16px]">edit</span>
+                          {locale === 'th' ? 'แก้ไข/ลด' : 'Edit / reduce'}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => printOrderSlip(order)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-container text-on-surface-variant text-xs font-medium hover:bg-surface-container-high transition-colors"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">print</span>
+                        {t('print_order')}
+                      </button>
+                    </div>
                   </div>
 
                   <div className="space-y-1">
@@ -638,6 +652,14 @@ export default function FulfillmentPage() {
           );
         })}
       </div>
+
+      {editingOrder && actor && (
+        <EditOrderItemsModal
+          order={editingOrder}
+          actor={actor}
+          onClose={() => setEditingOrder(null)}
+        />
+      )}
     </div>
   );
 }

@@ -30,6 +30,7 @@ const navSectionDefs: NavSectionDef[] = [
   {
     titleKey: "nav_order_management",
     items: [
+      { labelKey: "nav_new_order", icon: "add_shopping_cart", href: "/admin/orders/new" },
       { labelKey: "nav_order_fulfillment", icon: "package_2", href: "/admin/fulfillment" },
       { labelKey: "nav_order_history", icon: "receipt_long", href: "/admin/orders" },
     ],
@@ -285,9 +286,11 @@ export default function AdminSidebar() {
                 </div>
               ) : (
                 notifications.map((n) => (
-                  <div
+                  <Link
                     key={n.id}
-                    className={`px-4 py-3 border-b border-outline-variant/20 hover:bg-surface-container-low transition-colors ${!n.read ? "bg-primary/5" : ""}`}
+                    href="/admin/fulfillment/"
+                    onClick={() => setShowNotifDropdown(false)}
+                    className={`block px-4 py-3 border-b border-outline-variant/20 hover:bg-surface-container-low transition-colors ${!n.read ? "bg-primary/5" : ""}`}
                   >
                     <div className="flex items-start gap-3">
                       <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
@@ -307,7 +310,7 @@ export default function AdminSidebar() {
                       </div>
                       {!n.read && <div className="w-2 h-2 rounded-full bg-primary shrink-0 mt-2" />}
                     </div>
-                  </div>
+                  </Link>
                 ))
               )}
             </div>
@@ -354,9 +357,11 @@ export default function AdminSidebar() {
                 </div>
               ) : (
                 notifications.map((n) => (
-                  <div
+                  <Link
                     key={n.id}
-                    className={`px-4 py-3 border-b border-outline-variant/20 hover:bg-surface-container-low transition-colors ${!n.read ? "bg-primary/5" : ""}`}
+                    href="/admin/fulfillment/"
+                    onClick={() => setShowNotifDropdown(false)}
+                    className={`block px-4 py-3 border-b border-outline-variant/20 hover:bg-surface-container-low transition-colors ${!n.read ? "bg-primary/5" : ""}`}
                   >
                     <div className="flex items-start gap-3">
                       <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
@@ -376,7 +381,7 @@ export default function AdminSidebar() {
                       </div>
                       {!n.read && <div className="w-2 h-2 rounded-full bg-primary shrink-0 mt-2" />}
                     </div>
-                  </div>
+                  </Link>
                 ))
               )}
             </div>

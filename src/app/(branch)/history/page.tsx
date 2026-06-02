@@ -2,9 +2,10 @@
 
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { useLanguage } from '@/lib/language-context';
-import { useOrders } from '@/lib/useFirestore';
+import { useOrders, useBranches } from '@/lib/useFirestore';
 import { useBranchContext } from '@/lib/branch-context';
 import type { OrderStatus, Order } from '@/lib/firestore';
+import EditOrderItemsModal from '@/components/EditOrderItemsModal';
 
 const statusOrder: OrderStatus[] = ['new', 'processing', 'preparing', 'dispatched', 'out_for_delivery', 'delivered'];
 
@@ -23,6 +24,14 @@ export default function HistoryPage() {
   const { t, locale } = useLanguage();
   const { branchId } = useBranchContext();
   const { orders, loading } = useOrders({ branchId });
+  const { branches } = useBranches();
+  const currentBranch = branches.find((b) => b.id === branchId);
+  // Identify the editing actor on the branch side. Branch users don't
+  // have a /staff/{uid} record, so we surface the branch name + id.
+  const branchActor = currentBranch
+    ? { uid: currentBranch.id, name: currentBranch.nameTh || currentBranch.nameEn || currentBranch.code }
+    : null;
+  const [editingOrder, setEditingOrder] = useState<Order | null>(null);
 
   const [activeTab, setActiveTab] = useState<OrderStatus | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -387,6 +396,16 @@ export default function HistoryPage() {
                         </tfoot>
                       </table>
                     </div>
+                    {order.status === 'new' && branchActor && (
+                      <button
+                        type="button"
+                        onClick={() => setEditingOrder(order)}
+                        className="mt-3 inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-outline-variant text-on-surface text-xs font-semibold hover:bg-surface-container transition-colors"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">edit</span>
+                        {locale === 'th' ? 'แก้ไขรายการ / ยกเลิก' : 'Edit / cancel items'}
+                      </button>
+                    )}
                   </div>
 
                   {/* Delivery Info */}
@@ -587,6 +606,14 @@ export default function HistoryPage() {
             <span className="material-symbols-outlined text-[20px]">chevron_right</span>
           </button>
         </div>
+      )}
+
+      {editingOrder && branchActor && (
+        <EditOrderItemsModal
+          order={editingOrder}
+          actor={branchActor}
+          onClose={() => setEditingOrder(null)}
+        />
       )}
     </div>
   );

@@ -5,7 +5,9 @@ import { useOrders, useBranches } from '@/lib/useFirestore';
 import type { Order, OrderStatus } from '@/lib/firestore';
 import { loadSettings, type AppSettings } from '@/lib/firestore';
 import { useLanguage } from '@/lib/language-context';
+import { useActor } from '@/lib/staff-context';
 import Link from 'next/link';
+import EditOrderItemsModal from '@/components/EditOrderItemsModal';
 
 function formatCurrency(n: number) {
   return n.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -25,6 +27,7 @@ export default function OrdersPage() {
   const { t, locale } = useLanguage();
   const { orders, loading } = useOrders();
   const { branches } = useBranches();
+  const actor = useActor();
 
   const [branchFilter, setBranchFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<OrderStatus | 'all'>('all');
@@ -34,6 +37,7 @@ export default function OrdersPage() {
   const [sortField, setSortField] = useState<'date' | 'total' | 'status'>('date');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [editingOrder, setEditingOrder] = useState<Order | null>(null);
 
   useEffect(() => {
     loadSettings().then(setSettings);
@@ -58,14 +62,14 @@ export default function OrdersPage() {
 
     const co = settings;
     const bankHtml = (co?.bankAccountNumber)
-      ? `<div style="margin-top:24px;padding:14px 16px;background:#f0fdf4;border-radius:8px;border:1px solid #bbf7d0;">
-          <p style="margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#166534;font-weight:700;">${locale === 'th' ? 'ข้อมูลการชำระเงิน' : 'Payment Details'}</p>
-          <table style="width:100%;font-size:12px;border-collapse:collapse;">
-            ${co.bankName ? `<tr><td style="color:#555;padding:2px 0;">${locale === 'th' ? 'ธนาคาร' : 'Bank'}</td><td style="text-align:right;font-weight:600;">${co.bankName}</td></tr>` : ''}
-            ${co.bankAccountName ? `<tr><td style="color:#555;padding:2px 0;">${locale === 'th' ? 'ชื่อบัญชี' : 'Account Name'}</td><td style="text-align:right;font-weight:600;">${co.bankAccountName}</td></tr>` : ''}
-            ${co.bankBsb ? `<tr><td style="color:#555;padding:2px 0;">BSB</td><td style="text-align:right;font-weight:600;font-family:monospace;">${co.bankBsb}</td></tr>` : ''}
-            <tr><td style="color:#555;padding:2px 0;">${locale === 'th' ? 'เลขบัญชี' : 'Account No.'}</td><td style="text-align:right;font-weight:700;font-family:monospace;font-size:14px;color:#166534;">${co.bankAccountNumber}</td></tr>
-          </table>
+      ? `<div style="margin-top:10px;padding:5px 10px;background:#f0fdf4;border-radius:6px;border:1px solid #bbf7d0;font-size:10px;line-height:1.5;color:#374151;">
+          <span style="font-weight:700;color:#166534;text-transform:uppercase;letter-spacing:.04em;margin-right:6px;">${locale === 'th' ? 'การชำระ' : 'Payment'}</span>
+          ${[
+            co.bankName ? `<strong>${co.bankName}</strong>` : null,
+            co.bankAccountName,
+            co.bankBsb ? `BSB <span style="font-family:monospace;">${co.bankBsb}</span>` : null,
+            `${locale === 'th' ? 'เลข' : 'Acct'} <span style="font-family:monospace;font-weight:700;color:#166534;">${co.bankAccountNumber}</span>`,
+          ].filter(Boolean).join(' · ')}
         </div>`
       : '';
 
@@ -468,6 +472,15 @@ export default function OrdersPage() {
                                   <span className="material-symbols-outlined text-[16px]">print</span>
                                   {t('print')}
                                 </button>
+                                {o.status !== 'delivered' && o.status !== 'cancelled' && actor && (
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); setEditingOrder(o); }}
+                                    className="inline-flex items-center gap-1.5 px-4 py-2 bg-amber-50 text-amber-800 rounded-lg text-sm font-medium hover:bg-amber-100 transition-colors"
+                                  >
+                                    <span className="material-symbols-outlined text-[16px]">edit</span>
+                                    {locale === 'th' ? 'แก้ไข/ลดรายการ' : 'Edit / reduce items'}
+                                  </button>
+                                )}
                                 {o.invoiceNumber && (
                                   <Link
                                     href="/admin/invoices"
@@ -595,6 +608,14 @@ export default function OrdersPage() {
           </table>
         </div>
       </div>
+
+      {editingOrder && actor && (
+        <EditOrderItemsModal
+          order={editingOrder}
+          actor={actor}
+          onClose={() => setEditingOrder(null)}
+        />
+      )}
     </div>
   );
 }
