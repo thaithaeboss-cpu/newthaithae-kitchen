@@ -772,19 +772,22 @@ export async function updateOrder(id: string, data: Partial<Omit<Order, 'id' | '
   });
 }
 
-// Revise an existing order's line items downward only. Each entry in
-// `newItems` must mirror an existing order item, with `quantity` reduced
-// (or set to 0 to drop it). The function:
-//   • rejects any attempt to increase quantity or add new items
+// Revise an existing order's line items. Caller passes the desired
+// final list (mix of original lines with adjusted qty and brand-new
+// lines), and the helper:
+//   • diffs against the current order to determine stock impact
+//   • pre-validates stock for any net increase or newly added line
+//     (rejects the whole revision if any product runs short)
 //   • recomputes subtotal/vat/total
-//   • restocks the difference for each reduced line (best-effort)
-//   • appends a 'revised' timeline entry summarising the change
-//   • if every line ends at 0, auto-cancels the order
-// Pricing fields (unitPrice) come from the original items — they're a
-// snapshot so we don't accidentally re-price an in-flight order.
+//   • restocks the reduced delta and deducts the added delta (best-effort)
+//   • appends a 'revised' timeline entry with a human-readable diff
+//   • auto-cancels the order if the final list is empty
+// Original lines preserve their snapshot unitPrice — only the qty changes.
+// Newly added lines must arrive with the current tier unitPrice already
+// resolved by the caller (we don't re-price here).
 export async function reviseOrderItems(
   orderDocId: string,
-  desiredQuantities: Record<string, number>, // productId -> new qty (0 to remove)
+  newItems: OrderItem[],
   actor: { uid?: string; name: string },
 ): Promise<{ cancelled: boolean }> {
   const docRef = doc(db, 'orders', orderDocId);
@@ -796,40 +799,99 @@ export async function reviseOrderItems(
     throw new Error('Cannot edit a delivered or cancelled order');
   }
 
-  // Build the revised items list + collect diffs for stock restock.
-  type Diff = { productId: string; productName: string; from: number; to: number };
-  const diffs: Diff[] = [];
-  const revisedItems: OrderItem[] = [];
+  type DiffKind = 'increased' | 'decreased' | 'added' | 'removed';
+  type Diff = {
+    productId: string;
+    productName: string;
+    from: number;
+    to: number;
+    kind: DiffKind;
+  };
 
+  // Index original items by productId for quick lookup.
+  const originalByProduct = new Map<string, OrderItem>();
   for (const item of current.items) {
-    const requested = desiredQuantities[item.productId];
-    const newQty = requested === undefined ? item.quantity : Math.max(0, Math.floor(requested));
-    if (newQty > item.quantity) {
-      throw new Error(
-        `Cannot increase quantity for "${item.nameTh || item.nameEn}". Reduce only.`,
-      );
-    }
-    if (newQty !== item.quantity) {
+    originalByProduct.set(item.productId, item);
+  }
+
+  // Walk the desired list — anything not present is treated as "removed".
+  const newByProduct = new Map<string, OrderItem>();
+  for (const item of newItems) {
+    if (item.quantity > 0) newByProduct.set(item.productId, item);
+  }
+
+  const diffs: Diff[] = [];
+
+  for (const [productId, newItem] of newByProduct) {
+    const orig = originalByProduct.get(productId);
+    const fromQty = orig?.quantity ?? 0;
+    const toQty = newItem.quantity;
+    if (fromQty === toQty) continue;
+    const kind: DiffKind =
+      orig === undefined ? 'added' : toQty > fromQty ? 'increased' : 'decreased';
+    diffs.push({
+      productId,
+      productName: newItem.nameTh || newItem.nameEn,
+      from: fromQty,
+      to: toQty,
+      kind,
+    });
+  }
+  for (const [productId, orig] of originalByProduct) {
+    if (!newByProduct.has(productId)) {
       diffs.push({
-        productId: item.productId,
-        productName: item.nameTh || item.nameEn,
-        from: item.quantity,
-        to: newQty,
-      });
-    }
-    if (newQty > 0) {
-      revisedItems.push({
-        ...item,
-        quantity: newQty,
-        total: item.unitPrice * newQty,
+        productId,
+        productName: orig.nameTh || orig.nameEn,
+        from: orig.quantity,
+        to: 0,
+        kind: 'removed',
       });
     }
   }
 
-  // Nothing actually changed — bail out as a no-op so we don't pollute the timeline.
+  // No diffs → no-op, don't pollute the timeline.
   if (diffs.length === 0) {
     return { cancelled: false };
   }
+
+  // Pre-check stock for every product that ends with MORE qty than before.
+  // We need to read each product doc so we can compare against current stock.
+  const needStockCheck = diffs.filter((d) => d.to > d.from);
+  if (needStockCheck.length > 0) {
+    const productSnaps = await Promise.all(
+      needStockCheck.map((d) => getDoc(doc(db, 'products', d.productId))),
+    );
+    for (let i = 0; i < needStockCheck.length; i++) {
+      const d = needStockCheck[i];
+      const p = productSnaps[i];
+      const available = p.exists() ? (p.data() as Product).stock ?? 0 : 0;
+      const additional = d.to - d.from;
+      if (additional > available) {
+        throw new Error(
+          `Not enough stock for "${d.productName}": need +${additional}, only ${available} in stock`,
+        );
+      }
+    }
+  }
+
+  // Build the final items list using snapshot unitPrice from the original
+  // line whenever possible. New lines keep the unitPrice the caller supplied.
+  const revisedItems: OrderItem[] = newItems
+    .filter((it) => it.quantity > 0)
+    .map((it) => {
+      const orig = originalByProduct.get(it.productId);
+      const unitPrice = orig ? orig.unitPrice : it.unitPrice;
+      const unit = orig ? orig.unit : it.unit;
+      return {
+        productId: it.productId,
+        nameTh: it.nameTh,
+        nameEn: it.nameEn,
+        unit,
+        unitPrice,
+        quantity: it.quantity,
+        total: unitPrice * it.quantity,
+      };
+    });
 
   const subtotal = revisedItems.reduce((s, it) => s + it.total, 0);
   const vat = subtotal * 0.07;
@@ -837,13 +899,18 @@ export async function reviseOrderItems(
   const allRemoved = revisedItems.length === 0;
   const now = new Date();
 
-  // Build the change summary for the timeline note.
+  // Timeline note: "BBQ Beef: 3→5, Sticky Rice: added (2), Sauce: removed"
   const summary = diffs
-    .map((d) =>
-      d.to === 0
-        ? `${d.productName}: removed`
-        : `${d.productName}: ${d.from} → ${d.to}`,
-    )
+    .map((d) => {
+      switch (d.kind) {
+        case 'added':
+          return `${d.productName}: added (${d.to})`;
+        case 'removed':
+          return `${d.productName}: removed`;
+        default:
+          return `${d.productName}: ${d.from} → ${d.to}`;
+      }
+    })
     .join(', ');
 
   const reviseEntry: OrderTimelineEntry = {
@@ -875,9 +942,6 @@ export async function reviseOrderItems(
       at: now,
       note: 'Auto-cancelled: all items removed',
     };
-    // arrayUnion called twice in same update isn't allowed; we already
-    // included the revised entry above, so collapse both into one update
-    // using a second arrayUnion isn't possible — append manually.
     updateData.timeline = arrayUnion(
       { ...reviseEntry, at: Timestamp.fromDate(now) },
       { ...cancelEntry, at: Timestamp.fromDate(now) },
@@ -886,20 +950,22 @@ export async function reviseOrderItems(
 
   await updateDoc(docRef, updateData);
 
-  // Best-effort restock of the reduced quantities. Don't block on failure
-  // — order is already revised in Firestore.
+  // Best-effort stock reconciliation. Decreases restock, increases/additions
+  // deduct. Don't block on failure — the order is already revised in Firestore.
   await Promise.all(
-    diffs.map((d) =>
-      d.from > d.to
-        ? updateStock(
-            d.productId,
-            d.from - d.to,
-            `Revise #${current.orderId} by ${actor.name}`,
-          ).catch((err) =>
-            console.error(`Failed to restock ${d.productName}:`, err),
-          )
-        : Promise.resolve(),
-    ),
+    diffs.map((d) => {
+      const delta = d.to - d.from;
+      if (delta === 0) return Promise.resolve();
+      // Positive delta means we need to DEDUCT (took stock); negative means
+      // RESTOCK. updateStock adds the adjustment so we negate.
+      return updateStock(
+        d.productId,
+        -delta,
+        `Revise #${current.orderId} by ${actor.name}`,
+      ).catch((err) =>
+        console.error(`Failed to adjust stock for ${d.productName}:`, err),
+      );
+    }),
   );
 
   return { cancelled: allRemoved };

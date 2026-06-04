@@ -403,7 +403,7 @@ export default function HistoryPage() {
                         className="mt-3 inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-outline-variant text-on-surface text-xs font-semibold hover:bg-surface-container transition-colors"
                       >
                         <span className="material-symbols-outlined text-[16px]">edit</span>
-                        {locale === 'th' ? 'แก้ไขรายการ / ยกเลิก' : 'Edit / cancel items'}
+                        {locale === 'th' ? 'แก้ไขรายการ' : 'Edit items'}
                       </button>
                     )}
                   </div>

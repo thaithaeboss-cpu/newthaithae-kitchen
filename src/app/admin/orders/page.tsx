@@ -478,7 +478,7 @@ export default function OrdersPage() {
                                     className="inline-flex items-center gap-1.5 px-4 py-2 bg-amber-50 text-amber-800 rounded-lg text-sm font-medium hover:bg-amber-100 transition-colors"
                                   >
                                     <span className="material-symbols-outlined text-[16px]">edit</span>
-                                    {locale === 'th' ? 'แก้ไข/ลดรายการ' : 'Edit / reduce items'}
+                                    {locale === 'th' ? 'แก้ไขรายการ' : 'Edit items'}
                                   </button>
                                 )}
                                 {o.invoiceNumber && (

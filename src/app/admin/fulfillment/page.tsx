@@ -564,7 +564,7 @@ export default function FulfillmentPage() {
                           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-50 text-amber-800 text-xs font-medium hover:bg-amber-100 transition-colors"
                         >
                           <span className="material-symbols-outlined text-[16px]">edit</span>
-                          {locale === 'th' ? 'แก้ไข/ลด' : 'Edit / reduce'}
+                          {locale === 'th' ? 'แก้ไขรายการ' : 'Edit items'}
                         </button>
                       )}
                       <button
