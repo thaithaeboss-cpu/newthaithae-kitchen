@@ -867,6 +867,9 @@ export default function InvoicesPage() {
   const [paymentInvoice, setPaymentInvoice] = useState<Invoice | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  // Track which invoice row is expanded inline so the user can scan the
+  // line items without opening the full detail modal.
+  const [expandedInvoiceId, setExpandedInvoiceId] = useState<string | null>(null);
 
   useEffect(() => {
     loadSettings().then(setSettings);
@@ -1177,36 +1180,153 @@ export default function InvoicesPage() {
         </div>
       ) : (
         <div className="space-y-2">
-          {invoices.map((inv) => (
-            <button
-              key={inv.id}
-              onClick={() => setSelectedInvoice(inv)}
-              className="w-full text-left bg-surface-container-lowest rounded-xl p-4 border border-outline-variant/50 hover:border-primary/30 hover:shadow-sm transition-all"
-            >
-              <div className="flex items-center justify-between mb-1">
-                <div className="flex items-center gap-2">
-                  <span className="font-bold text-sm text-on-surface">{inv.invoiceNumber}</span>
-                  <StatusBadge status={inv.status} t={t} />
-                </div>
-                <span className="font-headline font-bold text-primary">฿{formatCurrency(inv.total)}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3 text-xs text-on-surface-variant">
-                  <span className="flex items-center gap-1">
-                    <span className="material-symbols-outlined text-sm">store</span>
-                    {inv.branchName}
-                  </span>
-                  <span>{formatDate(inv.createdAt)}</span>
-                  <span>{inv.orderNumbers.join(', ')}</span>
-                </div>
-                {(inv.status === 'unpaid' || inv.status === 'partial') && (
-                  <span className="text-xs text-red-500 font-medium">
-                    {t('amount_due')}: ฿{formatCurrency(inv.amountDue)}
-                  </span>
+          {invoices.map((inv) => {
+            const isExpanded = expandedInvoiceId === inv.id;
+            // Group items by sourceOrderNumber so the user can see what came
+            // from each underlying order when an invoice covers several.
+            const itemsByOrder = new Map<string, typeof inv.items>();
+            for (const item of inv.items) {
+              const key = item.sourceOrderNumber || '—';
+              if (!itemsByOrder.has(key)) itemsByOrder.set(key, []);
+              itemsByOrder.get(key)!.push(item);
+            }
+            return (
+              <div
+                key={inv.id}
+                className={`bg-surface-container-lowest rounded-xl border transition-all ${
+                  isExpanded
+                    ? 'border-primary/40 shadow-sm'
+                    : 'border-outline-variant/50 hover:border-primary/30 hover:shadow-sm'
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => setExpandedInvoiceId(isExpanded ? null : inv.id)}
+                  className="w-full text-left p-4"
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                      <span className="material-symbols-outlined text-on-surface-variant text-[18px]">
+                        {isExpanded ? 'expand_less' : 'expand_more'}
+                      </span>
+                      <span className="font-bold text-sm text-on-surface">{inv.invoiceNumber}</span>
+                      <StatusBadge status={inv.status} t={t} />
+                    </div>
+                    <span className="font-headline font-bold text-primary">฿{formatCurrency(inv.total)}</span>
+                  </div>
+                  <div className="flex items-center justify-between pl-6">
+                    <div className="flex items-center gap-3 text-xs text-on-surface-variant flex-wrap">
+                      <span className="flex items-center gap-1">
+                        <span className="material-symbols-outlined text-sm">store</span>
+                        {inv.branchName}
+                      </span>
+                      <span>{formatDate(inv.createdAt)}</span>
+                      <span>{inv.orderNumbers.join(', ')}</span>
+                      <span className="text-on-surface-variant/70">
+                        · {inv.items.length} {locale === 'th' ? 'รายการ' : 'items'}
+                      </span>
+                    </div>
+                    {(inv.status === 'unpaid' || inv.status === 'partial') && (
+                      <span className="text-xs text-red-500 font-medium">
+                        {t('amount_due')}: ฿{formatCurrency(inv.amountDue)}
+                      </span>
+                    )}
+                  </div>
+                </button>
+
+                {isExpanded && (
+                  <div className="px-4 pb-4 pt-1 border-t border-outline-variant/30">
+                    <div className="space-y-3 mt-3">
+                      {Array.from(itemsByOrder.entries()).map(([orderNum, items]) => {
+                        const groupTotal = items.reduce((s, it) => s + it.total, 0);
+                        return (
+                          <div key={orderNum} className="rounded-lg border border-outline-variant/40 overflow-hidden">
+                            <div className="flex items-center justify-between bg-surface-container-low px-3 py-1.5 text-xs">
+                              <span className="font-mono font-semibold text-on-surface">
+                                {orderNum}
+                              </span>
+                              <span className="text-on-surface-variant">
+                                {items.length} {locale === 'th' ? 'รายการ' : 'items'} · ฿{formatCurrency(groupTotal)}
+                              </span>
+                            </div>
+                            <table className="w-full text-sm">
+                              <tbody>
+                                {items.map((item, i) => (
+                                  <tr
+                                    key={i}
+                                    className={i > 0 ? 'border-t border-outline-variant/30' : ''}
+                                  >
+                                    <td className="px-3 py-1.5 text-on-surface">
+                                      {locale === 'th' ? item.nameTh : (item.nameEn || item.nameTh)}
+                                    </td>
+                                    <td className="px-3 py-1.5 text-on-surface-variant text-right whitespace-nowrap">
+                                      {item.quantity} {item.unit}
+                                    </td>
+                                    <td className="px-3 py-1.5 font-medium text-on-surface text-right whitespace-nowrap">
+                                      ฿{formatCurrency(item.total)}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Totals strip */}
+                    <div className="flex items-center justify-end gap-4 mt-3 text-xs text-on-surface-variant">
+                      <span>Subtotal ฿{formatCurrency(inv.subtotal)}</span>
+                      <span>GST ฿{formatCurrency(inv.vat)}</span>
+                      <span className="font-bold text-on-surface">
+                        {t('total')} ฿{formatCurrency(inv.total)}
+                      </span>
+                    </div>
+
+                    {/* Inline quick actions */}
+                    <div className="flex flex-wrap gap-2 mt-4">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedInvoice(inv)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-outline-variant text-on-surface text-xs font-semibold hover:bg-surface-container"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">open_in_full</span>
+                        {locale === 'th' ? 'ดูเต็ม' : 'Full detail'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => printInvoice(inv)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-outline-variant text-on-surface text-xs font-semibold hover:bg-surface-container"
+                      >
+                        <span className="material-symbols-outlined text-[16px]">print</span>
+                        {locale === 'th' ? 'พิมพ์' : 'Print'}
+                      </button>
+                      {(inv.status === 'unpaid' || inv.status === 'partial') && (
+                        <button
+                          type="button"
+                          onClick={() => setPaymentInvoice(inv)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary text-on-primary text-xs font-semibold hover:opacity-90"
+                        >
+                          <span className="material-symbols-outlined text-[16px]">payments</span>
+                          {locale === 'th' ? 'บันทึกการชำระ' : 'Record payment'}
+                        </button>
+                      )}
+                      {inv.status !== 'paid' && inv.status !== 'void' && (
+                        <button
+                          type="button"
+                          onClick={() => handleVoid(inv)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-200 text-red-700 text-xs font-semibold hover:bg-red-50"
+                        >
+                          <span className="material-symbols-outlined text-[16px]">block</span>
+                          {locale === 'th' ? 'ยกเลิก' : 'Void'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 )}
               </div>
-            </button>
-          ))}
+            );
+          })}
         </div>
       )}
 
