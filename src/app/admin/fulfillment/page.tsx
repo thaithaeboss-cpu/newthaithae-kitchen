@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useMemo, useEffect } from 'react';
+import Link from 'next/link';
 import { useOrders, useBranches } from '@/lib/useFirestore';
 import { updateOrderStatus, loadSettings } from '@/lib/firestore';
 import type { Order, OrderStatus, AppSettings } from '@/lib/firestore';
@@ -54,6 +55,10 @@ export default function FulfillmentPage() {
   const [activeTab, setActiveTab] = useState<FulfillmentTab>('new');
   const [expandedOrder, setExpandedOrder] = useState<string | null>(null);
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
+  // When true, clicking the "preparing" card also opens a roll-up modal
+  // so the kitchen can see total qty per product across every preparing
+  // order in one glance.
+  const [showPreparingSummary, setShowPreparingSummary] = useState(false);
   const [checkedItems, setCheckedItems] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -83,6 +88,43 @@ export default function FulfillmentPage() {
     return grouped;
   }, [orders]);
 
+  // Roll up every line item across all "preparing" orders so the kitchen
+  // can see total demand per product in one shot, sorted by quantity desc.
+  const preparingSummary = useMemo(() => {
+    type Bucket = {
+      productId: string;
+      nameTh: string;
+      nameEn: string;
+      unit: string;
+      totalQty: number;
+      orderCount: number;
+      branches: Set<string>;
+    };
+    const map = new Map<string, Bucket>();
+    for (const order of ordersByTab.preparing) {
+      for (const item of order.items) {
+        const key = item.productId;
+        const bucket = map.get(key);
+        if (bucket) {
+          bucket.totalQty += item.quantity;
+          bucket.orderCount += 1;
+          bucket.branches.add(order.branchName);
+        } else {
+          map.set(key, {
+            productId: key,
+            nameTh: item.nameTh,
+            nameEn: item.nameEn,
+            unit: item.unit,
+            totalQty: item.quantity,
+            orderCount: 1,
+            branches: new Set([order.branchName]),
+          });
+        }
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => b.totalQty - a.totalQty);
+  }, [ordersByTab.preparing]);
+
   const filteredOrders = useMemo(() => {
     let result = ordersByTab[activeTab];
     if (searchQuery.trim()) {
@@ -96,30 +138,43 @@ export default function FulfillmentPage() {
 
   const completedToday = orders.filter((o) => o.status === 'delivered').length;
 
-  const stats = [
+  // Each stat card is now interactive. The first three switch the tab
+  // below; "completed today" deep-links into /admin/orders pre-filtered
+  // to delivered (there's no completed tab in this page on purpose).
+  const stats: {
+    label: string;
+    count: number;
+    icon: string;
+    color: string;
+    action: { kind: 'tab'; tab: FulfillmentTab } | { kind: 'link'; href: string };
+  }[] = [
     {
       label: t('new_orders'),
       count: ordersByTab.new.length,
       icon: 'inbox',
       color: 'text-blue-600 bg-blue-50',
+      action: { kind: 'tab', tab: 'new' },
     },
     {
       label: t('preparing'),
       count: ordersByTab.preparing.length,
       icon: 'skillet',
       color: 'text-amber-600 bg-amber-50',
+      action: { kind: 'tab', tab: 'preparing' },
     },
     {
       label: t('out_for_delivery'),
       count: ordersByTab.dispatched.length,
       icon: 'local_shipping',
       color: 'text-indigo-600 bg-indigo-50',
+      action: { kind: 'tab', tab: 'dispatched' },
     },
     {
       label: t('completed_today'),
       count: completedToday,
       icon: 'check_circle',
       color: 'text-emerald-600 bg-emerald-50',
+      action: { kind: 'link', href: '/admin/orders/?status=delivered' },
     },
   ];
 
@@ -269,11 +324,8 @@ export default function FulfillmentPage() {
 
       {/* Summary Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {stats.map((stat) => (
-          <div
-            key={stat.label}
-            className="bg-surface-container-lowest rounded-xl p-4 border border-outline-variant/30"
-          >
+        {stats.map((stat) => {
+          const innerContent = (
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-xs text-on-surface-variant font-medium">{stat.label}</p>
@@ -285,8 +337,37 @@ export default function FulfillmentPage() {
                 <span className="material-symbols-outlined text-[22px]">{stat.icon}</span>
               </div>
             </div>
-          </div>
-        ))}
+          );
+          const isActiveTab =
+            stat.action.kind === 'tab' && stat.action.tab === activeTab;
+          const baseClass = `group bg-surface-container-lowest rounded-xl p-4 border text-left transition-all hover:shadow-md hover:border-primary/40 ${
+            isActiveTab ? 'border-primary/60 ring-2 ring-primary/10' : 'border-outline-variant/30'
+          }`;
+          return stat.action.kind === 'tab' ? (
+            <button
+              key={stat.label}
+              type="button"
+              onClick={() => {
+                if (stat.action.kind !== 'tab') return;
+                setActiveTab(stat.action.tab);
+                // The "preparing" card additionally pops a roll-up modal
+                // so the kitchen can see total demand at a glance.
+                if (stat.action.tab === 'preparing') setShowPreparingSummary(true);
+              }}
+              className={baseClass}
+            >
+              {innerContent}
+            </button>
+          ) : (
+            <Link
+              key={stat.label}
+              href={stat.action.href}
+              className={baseClass}
+            >
+              {innerContent}
+            </Link>
+          );
+        })}
       </div>
 
       {/* Search */}
@@ -659,6 +740,93 @@ export default function FulfillmentPage() {
           actor={actor}
           onClose={() => setEditingOrder(null)}
         />
+      )}
+
+      {showPreparingSummary && (
+        <div
+          className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setShowPreparingSummary(false)}
+        >
+          <div
+            className="bg-surface-container-lowest rounded-2xl w-full max-w-lg max-h-[85vh] flex flex-col shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-4 border-b border-outline-variant/20 shrink-0">
+              <div>
+                <h2 className="text-lg font-headline font-bold text-on-surface">
+                  {locale === 'th' ? 'ยอดรวมที่ต้องเตรียม' : 'Total to prepare'}
+                </h2>
+                <p className="text-xs text-on-surface-variant">
+                  {locale === 'th'
+                    ? `${ordersByTab.preparing.length} ออเดอร์ · ${preparingSummary.length} รายการสินค้า`
+                    : `${ordersByTab.preparing.length} orders · ${preparingSummary.length} products`}
+                </p>
+              </div>
+              <button
+                onClick={() => setShowPreparingSummary(false)}
+                className="p-1 rounded-lg hover:bg-surface-container-high"
+                aria-label="Close"
+              >
+                <span className="material-symbols-outlined text-on-surface-variant">close</span>
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-5 py-4">
+              {preparingSummary.length === 0 ? (
+                <div className="text-center py-12">
+                  <span className="material-symbols-outlined text-on-surface-variant/40 text-[40px]">
+                    skillet
+                  </span>
+                  <p className="text-sm text-on-surface-variant mt-2">
+                    {locale === 'th' ? 'ไม่มีออเดอร์ที่กำลังเตรียม' : 'No orders preparing right now'}
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  {preparingSummary.map((b, idx) => {
+                    const displayName = locale === 'th' ? b.nameTh : (b.nameEn || b.nameTh);
+                    return (
+                      <div
+                        key={b.productId}
+                        className="flex items-center gap-3 py-2.5 px-3 rounded-lg hover:bg-surface-container-low transition-colors"
+                      >
+                        <span className="w-6 text-center text-xs font-bold text-on-surface-variant tabular-nums shrink-0">
+                          {idx + 1}
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold text-on-surface truncate">
+                            {displayName}
+                          </p>
+                          <p className="text-[11px] text-on-surface-variant">
+                            {b.orderCount} {locale === 'th' ? 'ออเดอร์' : 'orders'}
+                            {' · '}
+                            {b.branches.size} {locale === 'th' ? 'สาขา' : 'branches'}
+                          </p>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className="font-headline font-bold text-primary text-lg leading-tight">
+                            {b.totalQty}
+                          </p>
+                          <p className="text-[11px] text-on-surface-variant -mt-0.5">{b.unit}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="border-t border-outline-variant/20 px-5 py-3 shrink-0">
+              <button
+                type="button"
+                onClick={() => setShowPreparingSummary(false)}
+                className="w-full py-2.5 rounded-xl bg-primary text-on-primary text-sm font-semibold hover:opacity-90"
+              >
+                {locale === 'th' ? 'ปิด' : 'Close'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

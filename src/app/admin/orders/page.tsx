@@ -43,6 +43,20 @@ export default function OrdersPage() {
     loadSettings().then(setSettings);
   }, []);
 
+  // Honour ?status=<OrderStatus> coming from deep links elsewhere in the
+  // admin (e.g. the fulfillment dashboard's "completed today" card).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get('status');
+    const valid: OrderStatus[] = [
+      'new', 'processing', 'preparing', 'dispatched', 'out_for_delivery', 'delivered', 'cancelled',
+    ];
+    if (raw && (valid as string[]).includes(raw)) {
+      setStatusFilter(raw as OrderStatus);
+    }
+  }, []);
+
   function printOrderSlip(order: Order) {
     const rows = order.items.map((item) => {
       const name = locale === 'th' ? item.nameTh : (item.nameEn || item.nameTh);

@@ -8,18 +8,17 @@ import { useLanguage } from '@/lib/language-context';
 import {
   useRecentOrders,
   useAnnouncements,
-  useLowStockProducts,
   useDashboardStats,
   useOrderWindow,
   useProducts,
+  useBranches,
 } from '@/lib/useFirestore';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { doc, onSnapshot, Timestamp } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { useState, useEffect } from 'react';
-import type { Announcement } from '@/lib/firestore';
+import { useState, useEffect, useMemo } from 'react';
+import type { Announcement, OrderTimelineEntry } from '@/lib/firestore';
 import { effectivePrice, type CustomerType } from '@/lib/firestore';
 import { useBranchContext } from '@/lib/branch-context';
-import { useBranches } from '@/lib/useFirestore';
 
 // --- page component ----------------------------------------------------
 
@@ -27,10 +26,11 @@ export default function BranchDashboard() {
   const { locale, t } = useLanguage();
   const { branchId } = useBranchContext();
 
-  // Firebase hooks
-  const { orders: recentOrders, loading: loadingOrders } = useRecentOrders(3, branchId);
+  // Firebase hooks. Pull a wider window of orders so we can derive both
+  // the "recent orders" preview (top 3) and the timeline activity feed
+  // from the same payload.
+  const { orders: recentOrders, loading: loadingOrders } = useRecentOrders(15, branchId);
   const { announcements, loading: loadingAnnouncements } = useAnnouncements(true);
-  const { products: lowStockProducts, loading: loadingLowStock } = useLowStockProducts();
   const { stats, loading: loadingStats } = useDashboardStats(branchId);
   const { isOpen: orderIsOpen, mode: orderMode, openTime: orderOpenTime, closeTime: orderCloseTime } = useOrderWindow();
   const { products: allProducts } = useProducts();
@@ -116,9 +116,72 @@ export default function BranchDashboard() {
 
   // seasonalItems now populated from Firestore (defined above near useOrderWindow)
 
-  // Inventory alerts derived from low-stock products
-  const criticalAlerts = lowStockProducts.filter((p) => p.stock <= p.minStock * 0.3);
-  const lowAlerts = lowStockProducts.filter((p) => p.stock > p.minStock * 0.3);
+  // Build the "Recent Activity" feed from this branch's order timelines.
+  // We surface only the events the branch genuinely cares about — the
+  // factory's stock churn stays on the admin dashboard.
+  type ActivityEntry = {
+    id: string;
+    action: OrderTimelineEntry['action'];
+    orderNumber: string;
+    actorName?: string;
+    note?: string;
+    at: Date;
+  };
+  const SHOWN_ACTIONS: OrderTimelineEntry['action'][] = [
+    'accepted',
+    'packed',
+    'dispatched',
+    'delivered',
+    'revised',
+    'cancelled',
+  ];
+  const recentActivity = useMemo<ActivityEntry[]>(() => {
+    const out: ActivityEntry[] = [];
+    for (const order of recentOrders) {
+      if (!order.timeline) continue;
+      for (let i = 0; i < order.timeline.length; i++) {
+        const entry = order.timeline[i];
+        if (!SHOWN_ACTIONS.includes(entry.action)) continue;
+        const at = entry.at instanceof Timestamp ? entry.at.toDate() : new Date(entry.at as any);
+        out.push({
+          id: `${order.id}-${i}`,
+          action: entry.action,
+          orderNumber: order.orderId,
+          actorName: entry.staffName,
+          note: entry.note,
+          at,
+        });
+      }
+    }
+    out.sort((a, b) => b.at.getTime() - a.at.getTime());
+    return out.slice(0, 10);
+  }, [recentOrders]);
+
+  // Action -> icon, colour, label (Th/En).
+  const activityCfg: Record<
+    OrderTimelineEntry['action'],
+    { icon: string; bg: string; fg: string; th: string; en: string }
+  > = {
+    accepted:       { icon: 'how_to_reg',     bg: 'bg-blue-100',    fg: 'text-blue-700',    th: 'โรงงานรับออเดอร์แล้ว', en: 'Order accepted' },
+    packed:         { icon: 'inventory_2',    bg: 'bg-emerald-100', fg: 'text-emerald-700', th: 'แพ็คเสร็จแล้ว',          en: 'Packed' },
+    dispatched:     { icon: 'local_shipping', bg: 'bg-indigo-100',  fg: 'text-indigo-700',  th: 'ออกจัดส่ง',              en: 'Dispatched' },
+    delivered:      { icon: 'task_alt',       bg: 'bg-green-100',   fg: 'text-green-700',   th: 'ส่งถึงสาขาแล้ว',         en: 'Delivered to branch' },
+    revised:        { icon: 'edit_note',      bg: 'bg-amber-100',   fg: 'text-amber-700',   th: 'แก้ไขรายการ',            en: 'Items revised' },
+    cancelled:      { icon: 'cancel',         bg: 'bg-red-100',     fg: 'text-red-700',     th: 'ยกเลิกออเดอร์',          en: 'Order cancelled' },
+    status_changed: { icon: 'sync',           bg: 'bg-gray-100',    fg: 'text-gray-700',    th: 'เปลี่ยนสถานะ',            en: 'Status changed' },
+    note:           { icon: 'edit_note',      bg: 'bg-gray-100',    fg: 'text-gray-700',    th: 'หมายเหตุ',                en: 'Note' },
+  };
+
+  function timeAgo(d: Date): string {
+    const diffMs = Date.now() - d.getTime();
+    const min = Math.floor(diffMs / 60000);
+    if (min < 1) return locale === 'th' ? 'เมื่อสักครู่' : 'just now';
+    if (min < 60) return locale === 'th' ? `${min} นาทีที่แล้ว` : `${min}m ago`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return locale === 'th' ? `${hr} ชม. ที่แล้ว` : `${hr}h ago`;
+    const day = Math.floor(hr / 24);
+    return locale === 'th' ? `${day} วันที่แล้ว` : `${day}d ago`;
+  }
 
   return (
     <div className="space-y-8 py-6">
@@ -240,7 +303,7 @@ export default function BranchDashboard() {
                 <div className="h-6 w-20 bg-surface-container-high rounded-full" />
               </div>
             ))}
-            {!loadingOrders && recentOrders.map((order) => {
+            {!loadingOrders && recentOrders.slice(0, 3).map((order) => {
               const cfg = statusConfig[order.status] ?? statusConfig.new;
               // Show who's currently handling the order. Preparing = acceptor,
               // dispatched/out_for_delivery = packer, delivered = final packer.
@@ -353,57 +416,63 @@ export default function BranchDashboard() {
             </div>
           </div>
 
-          {/* Inventory Alerts */}
+          {/* Recent Activity — order events scoped to this branch only.
+              Factory-side stock churn lives on /admin/, not here. */}
           <div className="rounded-xl bg-surface-container-low p-5 space-y-4">
             <div className="flex items-center justify-between">
-              <h4 className="font-headline font-bold text-on-surface">{t('inventory_alerts')}</h4>
-              {criticalAlerts.length > 0 && (
-                <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-error text-on-error">
-                  {criticalAlerts.length} {t('critical')}
-                </span>
-              )}
+              <h4 className="font-headline font-bold text-on-surface">
+                {locale === 'th' ? 'กิจกรรมล่าสุด' : 'Recent activity'}
+              </h4>
             </div>
 
             <div className="space-y-2">
-              {/* Critical alerts */}
-              {criticalAlerts.map((product) => (
-                <div
-                  key={product.id}
-                  className="flex items-center gap-3 p-3 rounded-lg bg-error-container"
-                >
-                  <span className="material-symbols-outlined text-on-error-container text-lg">
-                    warning
-                  </span>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-on-error-container truncate">
-                      {locale === 'th' ? product.nameTh : product.nameEn}
-                    </p>
-                    <p className="text-xs text-on-error-container/70">
-                      {product.stock} / {product.minStock} {locale === 'th' ? product.unitTh : product.unit}
-                    </p>
+              {loadingOrders ? (
+                [1, 2, 3].map((i) => (
+                  <div key={i} className="animate-pulse flex items-center gap-3 p-3 rounded-lg bg-surface-container-lowest">
+                    <div className="w-9 h-9 rounded-lg bg-surface-container-high shrink-0" />
+                    <div className="flex-1 space-y-1.5">
+                      <div className="h-3 w-32 bg-surface-container-high rounded" />
+                      <div className="h-2.5 w-24 bg-surface-container-high rounded" />
+                    </div>
                   </div>
-                </div>
-              ))}
-
-              {/* Low alerts */}
-              {lowAlerts.map((product) => (
-                <div
-                  key={product.id}
-                  className="flex items-center gap-3 p-3 rounded-lg bg-surface-container-lowest"
-                >
-                  <span className="material-symbols-outlined text-on-surface-variant text-lg">
-                    inventory_2
-                  </span>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-on-surface truncate">
-                      {locale === 'th' ? product.nameTh : product.nameEn}
-                    </p>
-                    <p className="text-xs text-on-surface-variant">
-                      {product.stock} / {product.minStock} {locale === 'th' ? product.unitTh : product.unit}
-                    </p>
-                  </div>
-                </div>
-              ))}
+                ))
+              ) : recentActivity.length === 0 ? (
+                <p className="text-sm text-on-surface-variant text-center py-6">
+                  {locale === 'th' ? 'ยังไม่มีกิจกรรม' : 'No activity yet'}
+                </p>
+              ) : (
+                recentActivity.map((act) => {
+                  const cfg = activityCfg[act.action];
+                  return (
+                    <Link
+                      key={act.id}
+                      href={`/history/?order=${encodeURIComponent(act.orderNumber)}`}
+                      className="flex items-start gap-3 p-3 rounded-lg bg-surface-container-lowest hover:bg-surface-container transition-colors"
+                    >
+                      <div className={`w-9 h-9 rounded-lg ${cfg.bg} ${cfg.fg} flex items-center justify-center shrink-0`}>
+                        <span className="material-symbols-outlined text-[20px]">{cfg.icon}</span>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-on-surface truncate">
+                          {locale === 'th' ? cfg.th : cfg.en}
+                        </p>
+                        <p className="text-xs text-on-surface-variant truncate">
+                          <span className="font-mono">#{act.orderNumber}</span>
+                          {act.actorName && (
+                            <> · {locale === 'th' ? 'โดย' : 'by'} <span className="font-semibold">{act.actorName}</span></>
+                          )}
+                          {act.action === 'revised' && act.note && (
+                            <> · {act.note}</>
+                          )}
+                        </p>
+                      </div>
+                      <span className="text-[10px] text-on-surface-variant whitespace-nowrap mt-1">
+                        {timeAgo(act.at)}
+                      </span>
+                    </Link>
+                  );
+                })
+              )}
             </div>
           </div>
         </div>
