@@ -138,6 +138,14 @@ function ProfileBootstrap() {
           (b) => (b.ownerEmail ?? '').toLowerCase() === email && !!email,
         );
         setIsBranchAccount(branchMatch);
+
+        // Owner whitelist still wins (admin@thaithae.com etc) — for everyone
+        // else who landed on /admin/* with a branch account, just bounce
+        // them straight to the branch side instead of showing the warning
+        // screen they would have to dismiss every single time.
+        if (branchMatch && !isOwnerEmail(email)) {
+          window.location.replace('/');
+        }
       })
       .catch(() => {
         setIsFirstUser(false);
@@ -185,34 +193,10 @@ function ProfileBootstrap() {
         {isFirstUser === null || isBranchAccount === null ? (
           <p className="text-sm text-on-surface-variant">กำลังตรวจสอบ…</p>
         ) : isBranchAccount && !currentIsOwner ? (
-          <>
-            <h2 className="text-xl font-headline font-bold text-on-surface">บัญชีนี้เป็นของสาขา</h2>
-            <p className="text-sm text-on-surface-variant">
-              อีเมลนี้ถูกลงทะเบียนไว้เป็นบัญชีสาขา ไม่สามารถเข้าใช้งานฝั่งผู้ดูแลระบบได้
-              <br />
-              กรุณาออกจากระบบแล้วล็อกอินด้วยบัญชีแอดมิน
-            </p>
-            <p className="text-xs text-on-surface-variant">
-              อีเมลปัจจุบัน: <span className="font-mono">{currentEmail}</span>
-            </p>
-            <div className="flex gap-2 justify-center">
-              <button
-                onClick={async () => {
-                  await signOut(auth);
-                  window.location.href = '/admin/login/';
-                }}
-                className="px-5 py-2.5 rounded-xl bg-primary text-on-primary text-sm font-semibold hover:opacity-90"
-              >
-                ออกจากระบบ
-              </button>
-              <button
-                onClick={() => { window.location.href = '/'; }}
-                className="px-5 py-2.5 rounded-xl border border-outline-variant text-sm font-semibold hover:bg-surface-container"
-              >
-                ไปหน้าสาขา
-              </button>
-            </div>
-          </>
+          // The effect above has already kicked off window.location.replace('/')
+          // — just paint a brief loading state so the warning screen never
+          // flashes for branch users who land on /admin/* by accident.
+          <p className="text-sm text-on-surface-variant">กำลังพาไปหน้าสาขา…</p>
         ) : canBootstrap ? (
           <>
             <h2 className="text-xl font-headline font-bold text-on-surface">ตั้งค่าผู้ดูแลระบบคนแรก</h2>
