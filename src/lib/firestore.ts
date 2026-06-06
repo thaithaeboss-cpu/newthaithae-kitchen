@@ -894,8 +894,9 @@ export async function reviseOrderItems(
     });
 
   const subtotal = revisedItems.reduce((s, it) => s + it.total, 0);
-  const vat = subtotal * 0.07;
-  const total = subtotal + vat;
+  // VAT/GST disabled — total equals subtotal.
+  const vat = 0;
+  const total = subtotal;
   const allRemoved = revisedItems.length === 0;
   const now = new Date();
 

@@ -159,8 +159,9 @@ export default function EditOrderItemsModal({ order, actor, onClose, onSaved }: 
 
   const keptLines = workingLines.filter((l) => l.quantity > 0);
   const subtotal = keptLines.reduce((s, l) => s + l.total, 0);
-  const vat = subtotal * 0.07;
-  const total = subtotal + vat;
+  // VAT/GST disabled — total equals subtotal.
+  const vat = 0;
+  const total = subtotal;
   const allRemoved = keptLines.length === 0;
   const hasChange = workingLines.some(
     (l) => l.quantity !== l.originalQty,

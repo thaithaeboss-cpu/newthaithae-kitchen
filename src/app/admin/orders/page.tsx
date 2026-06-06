@@ -157,8 +157,6 @@ export default function OrdersPage() {
         </tr></thead>
         <tbody>${rows}</tbody>
         <tfoot>
-          <tr><td colspan="2" style="padding:6px 12px;text-align:right;font-size:12px;color:#555;">${locale === 'th' ? 'ยอดก่อน GST' : 'Subtotal'}</td><td style="padding:6px 12px;text-align:right;">฿${formatCurrency(order.subtotal)}</td></tr>
-          <tr><td colspan="2" style="padding:6px 12px;text-align:right;font-size:12px;color:#555;">GST 10%</td><td style="padding:6px 12px;text-align:right;">฿${formatCurrency(order.vat)}</td></tr>
           <tr class="total-row">
             <td colspan="2" style="text-align:right">${locale === 'th' ? 'รวมทั้งสิ้น' : 'Grand Total'}</td>
             <td style="text-align:right;color:#00342b;">฿${formatCurrency(order.total)}</td>

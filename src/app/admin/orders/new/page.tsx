@@ -87,8 +87,9 @@ export default function NewOrderPage() {
   }, [cart, products, customerType]);
 
   const subtotal = cartLines.reduce((s, l) => s + l.total, 0);
-  const vat = subtotal * 0.07;
-  const grandTotal = subtotal + vat;
+  // VAT/GST disabled — grand total equals subtotal.
+  const vat = 0;
+  const grandTotal = subtotal;
   const cartCount = cartLines.reduce((s, l) => s + l.qty, 0);
 
   function setQty(productId: string, qty: number) {
@@ -415,17 +416,9 @@ export default function NewOrderPage() {
               />
             </div>
 
-            {/* Totals */}
+            {/* Totals — VAT/GST line removed; total is straight from items */}
             <div className="mt-4 pt-3 border-t border-outline-variant/40 space-y-1 text-sm">
-              <div className="flex justify-between text-on-surface-variant">
-                <span>{locale === 'th' ? 'ยอดก่อน VAT' : 'Subtotal'}</span>
-                <span>฿{formatBaht(subtotal)}</span>
-              </div>
-              <div className="flex justify-between text-on-surface-variant">
-                <span>VAT 7%</span>
-                <span>฿{formatBaht(vat)}</span>
-              </div>
-              <div className="flex justify-between font-bold text-on-surface text-base pt-1 border-t border-outline-variant/40">
+              <div className="flex justify-between font-bold text-on-surface text-base">
                 <span>{locale === 'th' ? 'รวม' : 'Total'}</span>
                 <span className="text-primary">฿{formatBaht(grandTotal)}</span>
               </div>

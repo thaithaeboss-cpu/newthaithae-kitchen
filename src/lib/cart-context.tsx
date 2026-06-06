@@ -137,8 +137,10 @@ export function CartProvider({ children }: { children: ReactNode }) {
     (sum, item) => sum + effectivePrice(item.product, customerType) * item.quantity,
     0
   );
-  const cartVat = cartSubtotal * 0.07;
-  const cartTotal = cartSubtotal + cartVat;
+  // VAT/GST is intentionally disabled — branches see and pay the listed
+  // tier price directly, no tax line is computed or shown.
+  const cartVat = 0;
+  const cartTotal = cartSubtotal;
   const cartCount = state.items.reduce((sum, item) => sum + item.quantity, 0);
 
   return (

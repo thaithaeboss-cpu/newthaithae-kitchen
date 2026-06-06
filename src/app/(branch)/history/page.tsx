@@ -377,14 +377,6 @@ export default function HistoryPage() {
                               ฿{formatCurrency(order.subtotal)}
                             </td>
                           </tr>
-                          <tr>
-                            <td colSpan={3} className="py-1 text-right text-sm text-on-surface-variant">
-                              GST 10%
-                            </td>
-                            <td className="py-1 text-right text-sm text-on-surface-variant">
-                              ฿{formatCurrency(order.vat)}
-                            </td>
-                          </tr>
                           <tr className="border-t border-outline-variant/50">
                             <td colSpan={3} className="py-2 text-right font-semibold text-on-surface">
                               {t('grand_total')}

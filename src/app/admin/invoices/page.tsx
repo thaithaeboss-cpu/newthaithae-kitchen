@@ -515,9 +515,7 @@ function CreateInvoiceModal({
                   ))}
                 </div>
                 <div className="border-t border-outline-variant/30 pt-2 mt-2 space-y-1 text-sm">
-                  <div className="flex justify-between"><span className="text-on-surface-variant">Subtotal</span><span>฿{formatCurrency(totalSubtotal)}</span></div>
-                  <div className="flex justify-between"><span className="text-on-surface-variant">GST 10%</span><span>฿{formatCurrency(totalVat)}</span></div>
-                  <div className="flex justify-between font-bold text-base pt-1 border-t border-outline-variant/30">
+                  <div className="flex justify-between font-bold text-base">
                     <span>{t('total')}</span>
                     <span className="text-primary">฿{formatCurrency(grandTotal)}</span>
                   </div>
@@ -725,14 +723,6 @@ function InvoiceDetail({
                 </tbody>
                 <tfoot>
                   <tr className="border-t border-outline-variant">
-                    <td colSpan={2} className="text-right px-3 py-1.5 text-xs text-on-surface-variant">Subtotal</td>
-                    <td className="text-right px-3 py-1.5">฿{formatCurrency(invoice.subtotal)}</td>
-                  </tr>
-                  <tr>
-                    <td colSpan={2} className="text-right px-3 py-1.5 text-xs text-on-surface-variant">GST 10%</td>
-                    <td className="text-right px-3 py-1.5">฿{formatCurrency(invoice.vat)}</td>
-                  </tr>
-                  <tr className="border-t-2 border-on-surface">
                     <td colSpan={2} className="text-right px-3 py-2 font-bold">{t('total')}</td>
                     <td className="text-right px-3 py-2 font-bold text-primary">฿{formatCurrency(invoice.total)}</td>
                   </tr>
@@ -1015,8 +1005,6 @@ export default function InvoicesPage() {
         </tr></thead>
         <tbody>${rows}</tbody>
         <tfoot>
-          <tr><td colspan="2" style="padding:6px 12px;text-align:right;font-size:12px;color:#555;">Subtotal</td><td style="padding:6px 12px;text-align:right;">฿${formatCurrency(invoice.subtotal)}</td></tr>
-          <tr><td colspan="2" style="padding:6px 12px;text-align:right;font-size:12px;color:#555;">GST 10%</td><td style="padding:6px 12px;text-align:right;">฿${formatCurrency(invoice.vat)}</td></tr>
           <tr class="total-row">
             <td colspan="2" style="text-align:right">${locale === 'th' ? 'รวมทั้งสิ้น' : 'Grand Total'}</td>
             <td style="text-align:right;color:#00342b;">฿${formatCurrency(invoice.total)}</td>
@@ -1274,10 +1262,8 @@ export default function InvoicesPage() {
                       })}
                     </div>
 
-                    {/* Totals strip */}
-                    <div className="flex items-center justify-end gap-4 mt-3 text-xs text-on-surface-variant">
-                      <span>Subtotal ฿{formatCurrency(inv.subtotal)}</span>
-                      <span>GST ฿{formatCurrency(inv.vat)}</span>
+                    {/* Totals strip — no VAT/GST line */}
+                    <div className="flex items-center justify-end mt-3 text-xs">
                       <span className="font-bold text-on-surface">
                         {t('total')} ฿{formatCurrency(inv.total)}
                       </span>
