@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   productCategories,
   Product,
@@ -36,6 +36,17 @@ export default function ProductsPage() {
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<ProductCategory | 'all'>('all');
   const [stockFilter, setStockFilter] = useState<StockFilter>('all');
+
+  // Honour a ?stock=low_stock|out_of_stock|in_stock|all query param so
+  // /admin/stock can deep-link straight into a filtered view.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const fromUrl = params.get('stock');
+    if (fromUrl === 'low_stock' || fromUrl === 'out_of_stock' || fromUrl === 'in_stock' || fromUrl === 'all') {
+      setStockFilter(fromUrl);
+    }
+  }, []);
   const [showModal, setShowModal] = useState(false);
   const [editProductItem, setEditProductItem] = useState<Product | null>(null);
   const [formData, setFormData] = useState(emptyProduct);

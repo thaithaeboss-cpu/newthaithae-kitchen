@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { useProducts, useStockAdjustments, useOrders } from '@/lib/useFirestore';
+import Link from 'next/link';
+import { useProducts, useStockAdjustments } from '@/lib/useFirestore';
 import { updateStock } from '@/lib/firestore';
 import { useLanguage } from '@/lib/language-context';
 
@@ -17,7 +18,6 @@ const stockMovement = [
 export default function StockPage() {
   const { t, locale } = useLanguage();
   const { products, loading: loadingProducts } = useProducts();
-  const { orders } = useOrders();
   const { adjustments, loading: loadingAdjustments } = useStockAdjustments(20);
 
   const [selectedProduct, setSelectedProduct] = useState('');
@@ -31,15 +31,39 @@ export default function StockPage() {
   const totalProducts = products.length;
   const lowStock = products.filter((p) => p.stock > 0 && p.stock <= p.minStock).length;
   const outOfStock = products.filter((p) => p.stock === 0).length;
-  const incomingShipments = orders.filter((o) => o.status !== 'delivered' && o.status !== 'cancelled').length;
 
   const maxMovement = Math.max(...stockMovement.map((m) => Math.max(m.inbound, m.outbound)));
 
-  const overviewCards = [
-    { label: t('total_products'), value: totalProducts, icon: 'inventory_2', color: 'bg-blue-100 text-blue-700' },
-    { label: t('low_stock'), value: lowStock, icon: 'trending_down', color: 'bg-amber-100 text-amber-700' },
-    { label: t('out_of_stock'), value: outOfStock, icon: 'remove_shopping_cart', color: 'bg-red-100 text-red-700' },
-    { label: t('incoming_shipments'), value: incomingShipments, icon: 'local_shipping', color: 'bg-green-100 text-green-700' },
+  // Each card deep-links into /admin/products with the matching stock filter
+  // so users land on a pre-filtered list of products they care about.
+  const overviewCards: {
+    label: string;
+    value: number;
+    icon: string;
+    color: string;
+    href: string;
+  }[] = [
+    {
+      label: t('total_products'),
+      value: totalProducts,
+      icon: 'inventory_2',
+      color: 'bg-blue-100 text-blue-700',
+      href: '/admin/products/',
+    },
+    {
+      label: t('low_stock'),
+      value: lowStock,
+      icon: 'trending_down',
+      color: 'bg-amber-100 text-amber-700',
+      href: '/admin/products/?stock=low_stock',
+    },
+    {
+      label: t('out_of_stock'),
+      value: outOfStock,
+      icon: 'remove_shopping_cart',
+      color: 'bg-red-100 text-red-700',
+      href: '/admin/products/?stock=out_of_stock',
+    },
   ];
 
   const handleSubmitAdjustment = async () => {
@@ -72,19 +96,28 @@ export default function StockPage() {
       <h1 className="text-2xl font-headline font-bold text-on-surface">{t('stock_management')}</h1>
 
       {/* Overview Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
         {loadingProducts
-          ? Array.from({ length: 4 }).map((_, i) => (
+          ? Array.from({ length: 3 }).map((_, i) => (
               <div key={i} className="animate-pulse bg-surface-container-high rounded-xl h-28" />
             ))
           : overviewCards.map((c) => (
-              <div key={c.label} className="bg-surface-container-lowest rounded-xl p-5 shadow-sm border border-outline-variant/30">
-                <div className={`w-10 h-10 rounded-lg ${c.color} flex items-center justify-center mb-3`}>
-                  <span className="material-symbols-outlined text-[22px]">{c.icon}</span>
+              <Link
+                key={c.label}
+                href={c.href}
+                className="group bg-surface-container-lowest rounded-xl p-5 shadow-sm border border-outline-variant/30 hover:border-primary/50 hover:shadow-md transition-all"
+              >
+                <div className="flex items-start justify-between">
+                  <div className={`w-10 h-10 rounded-lg ${c.color} flex items-center justify-center mb-3`}>
+                    <span className="material-symbols-outlined text-[22px]">{c.icon}</span>
+                  </div>
+                  <span className="material-symbols-outlined text-[18px] text-on-surface-variant/40 group-hover:text-primary transition-colors">
+                    arrow_outward
+                  </span>
                 </div>
                 <p className="text-2xl font-bold text-on-surface">{c.value}</p>
                 <p className="text-sm text-on-surface-variant mt-1">{c.label}</p>
-              </div>
+              </Link>
             ))}
       </div>
 
