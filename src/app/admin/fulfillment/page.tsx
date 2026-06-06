@@ -308,6 +308,88 @@ export default function FulfillmentPage() {
     w.onafterprint = () => w.close();
   }
 
+  // Print the kitchen prep sheet — a rolled-up list of every product
+  // needed across every preparing order. Kept intentionally simple so
+  // it's readable at a glance from across the prep area.
+  function printPreparingSummary() {
+    if (preparingSummary.length === 0) return;
+    const co = settings;
+    const coName = co?.companyName ?? 'Thai Thae';
+    const logoHtml = co?.logoUrl
+      ? `<img src="${co.logoUrl}" alt="logo" style="height:48px;object-fit:contain;"/>`
+      : '';
+    const now = new Date().toLocaleString(locale === 'th' ? 'th-TH' : 'en-AU');
+    const orderCount = ordersByTab.preparing.length;
+    const grandQty = preparingSummary.reduce((s, b) => s + b.totalQty, 0);
+
+    const rows = preparingSummary
+      .map((b, idx) => {
+        const name = locale === 'th' ? b.nameTh : (b.nameEn || b.nameTh);
+        return `<tr>
+          <td style="padding:8px 12px;border-bottom:1px solid #e5e7eb;width:40px;text-align:center;color:#888;">${idx + 1}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e5e7eb;font-weight:600;">${name}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e5e7eb;text-align:right;font-size:18px;font-weight:700;">${b.totalQty}</td>
+          <td style="padding:8px 12px;border-bottom:1px solid #e5e7eb;color:#666;width:60px;">${b.unit}</td>
+        </tr>`;
+      })
+      .join('');
+
+    const html = `<!DOCTYPE html><html><head>
+      <meta charset="utf-8"/>
+      <title>${locale === 'th' ? 'ยอดรวมที่ต้องเตรียม' : 'Prep Summary'}</title>
+      <style>
+        * { box-sizing: border-box; }
+        @page { size: A4; margin: 18mm; }
+        body { font-family: sans-serif; font-size: 14px; color: #111; margin: 0; }
+        .header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 12px; border-bottom: 2px solid #111; margin-bottom: 16px; }
+        .header h1 { margin: 0 0 4px; font-size: 22px; }
+        .header .meta { font-size: 11px; color: #555; }
+        table { width: 100%; border-collapse: collapse; }
+        thead th { background:#f3f4f6; padding:8px 12px; text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:0.04em; color:#555; }
+        .summary { margin-top: 16px; padding: 10px 12px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; font-size:12px; color:#166534; display:flex; justify-content:space-between; }
+        .footer { margin-top:20px; padding-top:10px; border-top:1px solid #e5e7eb; font-size:10px; color:#888; }
+      </style>
+    </head><body>
+      <div class="header">
+        <div>
+          <h1>${locale === 'th' ? 'ยอดรวมที่ต้องเตรียม' : 'Kitchen Prep Summary'}</h1>
+          <div class="meta">
+            ${locale === 'th' ? 'พิมพ์เมื่อ' : 'Printed'}: ${now}
+            &nbsp;·&nbsp;
+            ${orderCount} ${locale === 'th' ? 'ออเดอร์' : 'orders'}
+            &nbsp;·&nbsp;
+            ${preparingSummary.length} ${locale === 'th' ? 'รายการสินค้า' : 'products'}
+          </div>
+        </div>
+        ${logoHtml}
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:40px;text-align:center;">#</th>
+            <th>${locale === 'th' ? 'รายการสินค้า' : 'Product'}</th>
+            <th style="text-align:right;">${locale === 'th' ? 'จำนวน' : 'Qty'}</th>
+            <th>${locale === 'th' ? 'หน่วย' : 'Unit'}</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="summary">
+        <span>${locale === 'th' ? 'รวมทั้งหมด' : 'Grand total'}: <strong>${preparingSummary.length}</strong> ${locale === 'th' ? 'รายการ' : 'products'}</span>
+        <span>${locale === 'th' ? 'รวมจำนวนชิ้น' : 'Total units'}: <strong>${grandQty}</strong></span>
+      </div>
+      <div class="footer">${coName} &nbsp;·&nbsp; ${locale === 'th' ? 'รายการอัปเดตทุกครั้งที่มีออเดอร์เปลี่ยนสถานะ' : 'List updates whenever order statuses change'}</div>
+    </body></html>`;
+
+    const w = window.open('', '_blank', 'width=800,height=1000');
+    if (!w) return;
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+    w.print();
+    w.onafterprint = () => w.close();
+  }
+
   return (
     <div className="space-y-6 pb-8">
       {/* Header */}
@@ -814,11 +896,20 @@ export default function FulfillmentPage() {
               )}
             </div>
 
-            <div className="border-t border-outline-variant/20 px-5 py-3 shrink-0">
+            <div className="border-t border-outline-variant/20 px-5 py-3 shrink-0 flex gap-2">
+              <button
+                type="button"
+                onClick={printPreparingSummary}
+                disabled={preparingSummary.length === 0}
+                className="flex-1 inline-flex items-center justify-center gap-1.5 py-2.5 rounded-xl border border-outline-variant text-on-surface text-sm font-semibold hover:bg-surface-container disabled:opacity-40"
+              >
+                <span className="material-symbols-outlined text-[18px]">print</span>
+                {locale === 'th' ? 'พิมพ์' : 'Print'}
+              </button>
               <button
                 type="button"
                 onClick={() => setShowPreparingSummary(false)}
-                className="w-full py-2.5 rounded-xl bg-primary text-on-primary text-sm font-semibold hover:opacity-90"
+                className="flex-1 py-2.5 rounded-xl bg-primary text-on-primary text-sm font-semibold hover:opacity-90"
               >
                 {locale === 'th' ? 'ปิด' : 'Close'}
               </button>
