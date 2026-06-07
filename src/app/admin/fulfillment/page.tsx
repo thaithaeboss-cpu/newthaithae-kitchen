@@ -55,10 +55,10 @@ export default function FulfillmentPage() {
   const [activeTab, setActiveTab] = useState<FulfillmentTab>('new');
   const [expandedOrder, setExpandedOrder] = useState<string | null>(null);
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
-  // When true, clicking the "preparing" card also opens a roll-up modal
-  // so the kitchen can see total qty per product across every preparing
-  // order in one glance.
-  const [showPreparingSummary, setShowPreparingSummary] = useState(false);
+  // Clicking the "new" or "preparing" card also opens a roll-up modal
+  // for that tab so the kitchen can see total qty per product across
+  // every order in that bucket. null = no modal open.
+  const [summaryTab, setSummaryTab] = useState<'new' | 'preparing' | null>(null);
   const [checkedItems, setCheckedItems] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -88,20 +88,21 @@ export default function FulfillmentPage() {
     return grouped;
   }, [orders]);
 
-  // Roll up every line item across all "preparing" orders so the kitchen
-  // can see total demand per product in one shot, sorted by quantity desc.
-  const preparingSummary = useMemo(() => {
-    type Bucket = {
-      productId: string;
-      nameTh: string;
-      nameEn: string;
-      unit: string;
-      totalQty: number;
-      orderCount: number;
-      branches: Set<string>;
-    };
-    const map = new Map<string, Bucket>();
-    for (const order of ordersByTab.preparing) {
+  // Roll up every line item across a given bucket of orders so the
+  // kitchen can see total demand per product in one shot, sorted by
+  // quantity desc. Used by both "new" and "preparing" summary modals.
+  type SummaryBucket = {
+    productId: string;
+    nameTh: string;
+    nameEn: string;
+    unit: string;
+    totalQty: number;
+    orderCount: number;
+    branches: Set<string>;
+  };
+  function aggregateItems(srcOrders: Order[]): SummaryBucket[] {
+    const map = new Map<string, SummaryBucket>();
+    for (const order of srcOrders) {
       for (const item of order.items) {
         const key = item.productId;
         const bucket = map.get(key);
@@ -123,7 +124,16 @@ export default function FulfillmentPage() {
       }
     }
     return Array.from(map.values()).sort((a, b) => b.totalQty - a.totalQty);
-  }, [ordersByTab.preparing]);
+  }
+
+  const summaryOrders = summaryTab ? ordersByTab[summaryTab] : [];
+  const summaryItems = useMemo(
+    () => (summaryTab ? aggregateItems(summaryOrders) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [summaryTab, summaryOrders],
+  );
+  const summaryTitleTh = summaryTab === 'new' ? 'ยอดรอรับ — สรุปรายการ' : 'ยอดรวมที่ต้องเตรียม';
+  const summaryTitleEn = summaryTab === 'new' ? 'Pending orders — items summary' : 'Kitchen Prep Summary';
 
   const filteredOrders = useMemo(() => {
     let result = ordersByTab[activeTab];
@@ -308,21 +318,21 @@ export default function FulfillmentPage() {
     w.onafterprint = () => w.close();
   }
 
-  // Print the kitchen prep sheet — a rolled-up list of every product
-  // needed across every preparing order. Kept intentionally simple so
-  // it's readable at a glance from across the prep area.
-  function printPreparingSummary() {
-    if (preparingSummary.length === 0) return;
+  // Print an A4 sheet of any aggregated bucket. Used by both "new" and
+  // "preparing" summaries — title varies per tab.
+  function printSummary() {
+    if (summaryItems.length === 0 || !summaryTab) return;
     const co = settings;
     const coName = co?.companyName ?? 'Thai Thae';
     const logoHtml = co?.logoUrl
       ? `<img src="${co.logoUrl}" alt="logo" style="height:48px;object-fit:contain;"/>`
       : '';
     const now = new Date().toLocaleString(locale === 'th' ? 'th-TH' : 'en-AU');
-    const orderCount = ordersByTab.preparing.length;
-    const grandQty = preparingSummary.reduce((s, b) => s + b.totalQty, 0);
+    const orderCount = summaryOrders.length;
+    const grandQty = summaryItems.reduce((s, b) => s + b.totalQty, 0);
+    const headerTitle = locale === 'th' ? summaryTitleTh : summaryTitleEn;
 
-    const rows = preparingSummary
+    const rows = summaryItems
       .map((b, idx) => {
         const name = locale === 'th' ? b.nameTh : (b.nameEn || b.nameTh);
         return `<tr>
@@ -336,7 +346,7 @@ export default function FulfillmentPage() {
 
     const html = `<!DOCTYPE html><html><head>
       <meta charset="utf-8"/>
-      <title>${locale === 'th' ? 'ยอดรวมที่ต้องเตรียม' : 'Prep Summary'}</title>
+      <title>${headerTitle}</title>
       <style>
         * { box-sizing: border-box; }
         @page { size: A4; margin: 18mm; }
@@ -352,13 +362,13 @@ export default function FulfillmentPage() {
     </head><body>
       <div class="header">
         <div>
-          <h1>${locale === 'th' ? 'ยอดรวมที่ต้องเตรียม' : 'Kitchen Prep Summary'}</h1>
+          <h1>${headerTitle}</h1>
           <div class="meta">
             ${locale === 'th' ? 'พิมพ์เมื่อ' : 'Printed'}: ${now}
             &nbsp;·&nbsp;
             ${orderCount} ${locale === 'th' ? 'ออเดอร์' : 'orders'}
             &nbsp;·&nbsp;
-            ${preparingSummary.length} ${locale === 'th' ? 'รายการสินค้า' : 'products'}
+            ${summaryItems.length} ${locale === 'th' ? 'รายการสินค้า' : 'products'}
           </div>
         </div>
         ${logoHtml}
@@ -375,7 +385,7 @@ export default function FulfillmentPage() {
         <tbody>${rows}</tbody>
       </table>
       <div class="summary">
-        <span>${locale === 'th' ? 'รวมทั้งหมด' : 'Grand total'}: <strong>${preparingSummary.length}</strong> ${locale === 'th' ? 'รายการ' : 'products'}</span>
+        <span>${locale === 'th' ? 'รวมทั้งหมด' : 'Grand total'}: <strong>${summaryItems.length}</strong> ${locale === 'th' ? 'รายการ' : 'products'}</span>
         <span>${locale === 'th' ? 'รวมจำนวนชิ้น' : 'Total units'}: <strong>${grandQty}</strong></span>
       </div>
       <div class="footer">${coName} &nbsp;·&nbsp; ${locale === 'th' ? 'รายการอัปเดตทุกครั้งที่มีออเดอร์เปลี่ยนสถานะ' : 'List updates whenever order statuses change'}</div>
@@ -430,9 +440,11 @@ export default function FulfillmentPage() {
               onClick={() => {
                 if (stat.action.kind !== 'tab') return;
                 setActiveTab(stat.action.tab);
-                // The "preparing" card additionally pops a roll-up modal
-                // so the kitchen can see total demand at a glance.
-                if (stat.action.tab === 'preparing') setShowPreparingSummary(true);
+                // "new" and "preparing" cards additionally pop a roll-up
+                // modal so the kitchen can see total demand at a glance.
+                if (stat.action.tab === 'new' || stat.action.tab === 'preparing') {
+                  setSummaryTab(stat.action.tab);
+                }
               }}
               className={baseClass}
             >
@@ -822,10 +834,10 @@ export default function FulfillmentPage() {
         />
       )}
 
-      {showPreparingSummary && (
+      {summaryTab && (
         <div
           className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
-          onClick={() => setShowPreparingSummary(false)}
+          onClick={() => setSummaryTab(null)}
         >
           <div
             className="bg-surface-container-lowest rounded-2xl w-full max-w-lg max-h-[85vh] flex flex-col shadow-xl"
@@ -834,16 +846,16 @@ export default function FulfillmentPage() {
             <div className="flex items-center justify-between px-5 py-4 border-b border-outline-variant/20 shrink-0">
               <div>
                 <h2 className="text-lg font-headline font-bold text-on-surface">
-                  {locale === 'th' ? 'ยอดรวมที่ต้องเตรียม' : 'Total to prepare'}
+                  {locale === 'th' ? summaryTitleTh : summaryTitleEn}
                 </h2>
                 <p className="text-xs text-on-surface-variant">
                   {locale === 'th'
-                    ? `${ordersByTab.preparing.length} ออเดอร์ · ${preparingSummary.length} รายการสินค้า`
-                    : `${ordersByTab.preparing.length} orders · ${preparingSummary.length} products`}
+                    ? `${summaryOrders.length} ออเดอร์ · ${summaryItems.length} รายการสินค้า`
+                    : `${summaryOrders.length} orders · ${summaryItems.length} products`}
                 </p>
               </div>
               <button
-                onClick={() => setShowPreparingSummary(false)}
+                onClick={() => setSummaryTab(null)}
                 className="p-1 rounded-lg hover:bg-surface-container-high"
                 aria-label="Close"
               >
@@ -852,18 +864,20 @@ export default function FulfillmentPage() {
             </div>
 
             <div className="flex-1 overflow-y-auto px-5 py-4">
-              {preparingSummary.length === 0 ? (
+              {summaryItems.length === 0 ? (
                 <div className="text-center py-12">
                   <span className="material-symbols-outlined text-on-surface-variant/40 text-[40px]">
-                    skillet
+                    {summaryTab === 'new' ? 'inbox' : 'skillet'}
                   </span>
                   <p className="text-sm text-on-surface-variant mt-2">
-                    {locale === 'th' ? 'ไม่มีออเดอร์ที่กำลังเตรียม' : 'No orders preparing right now'}
+                    {summaryTab === 'new'
+                      ? (locale === 'th' ? 'ไม่มีออเดอร์ที่รอรับ' : 'No pending orders right now')
+                      : (locale === 'th' ? 'ไม่มีออเดอร์ที่กำลังเตรียม' : 'No orders preparing right now')}
                   </p>
                 </div>
               ) : (
                 <div className="space-y-1.5">
-                  {preparingSummary.map((b, idx) => {
+                  {summaryItems.map((b, idx) => {
                     const displayName = locale === 'th' ? b.nameTh : (b.nameEn || b.nameTh);
                     return (
                       <div
@@ -899,8 +913,8 @@ export default function FulfillmentPage() {
             <div className="border-t border-outline-variant/20 px-5 py-3 shrink-0 flex gap-2">
               <button
                 type="button"
-                onClick={printPreparingSummary}
-                disabled={preparingSummary.length === 0}
+                onClick={printSummary}
+                disabled={summaryItems.length === 0}
                 className="flex-1 inline-flex items-center justify-center gap-1.5 py-2.5 rounded-xl border border-outline-variant text-on-surface text-sm font-semibold hover:bg-surface-container disabled:opacity-40"
               >
                 <span className="material-symbols-outlined text-[18px]">print</span>
@@ -908,7 +922,7 @@ export default function FulfillmentPage() {
               </button>
               <button
                 type="button"
-                onClick={() => setShowPreparingSummary(false)}
+                onClick={() => setSummaryTab(null)}
                 className="flex-1 py-2.5 rounded-xl bg-primary text-on-primary text-sm font-semibold hover:opacity-90"
               >
                 {locale === 'th' ? 'ปิด' : 'Close'}

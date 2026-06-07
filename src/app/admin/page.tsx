@@ -182,6 +182,7 @@ export default function AdminDashboard() {
       trendUp: true,
       iconBg: 'bg-green-100',
       iconColor: 'text-green-700',
+      href: '/admin/reports/',
     },
     {
       label: t('pending_orders'),
@@ -191,6 +192,7 @@ export default function AdminDashboard() {
       trendUp: true,
       iconBg: 'bg-amber-100',
       iconColor: 'text-amber-700',
+      href: '/admin/fulfillment/',
     },
     {
       label: t('active_branches'),
@@ -200,6 +202,7 @@ export default function AdminDashboard() {
       trendUp: true,
       iconBg: 'bg-blue-100',
       iconColor: 'text-blue-700',
+      href: '/admin/branches/',
     },
     {
       label: t('low_stock_items'),
@@ -209,6 +212,7 @@ export default function AdminDashboard() {
       trendUp: false,
       iconBg: 'bg-red-100',
       iconColor: 'text-red-700',
+      href: '/admin/products/?stock=low_stock',
     },
   ];
 
@@ -314,9 +318,10 @@ export default function AdminDashboard() {
         ) : (
           <>
             {kpis.map((kpi) => (
-              <div
+              <Link
                 key={kpi.label}
-                className="bg-surface-container-lowest rounded-xl p-5 shadow-sm border border-outline-variant/30"
+                href={kpi.href}
+                className="group bg-surface-container-lowest rounded-xl p-5 shadow-sm border border-outline-variant/30 hover:border-primary/40 hover:shadow-md transition-all"
               >
                 <div className="flex items-start justify-between">
                   <div className={`w-11 h-11 rounded-lg ${kpi.iconBg} flex items-center justify-center`}>
@@ -335,8 +340,13 @@ export default function AdminDashboard() {
                   </span>
                 </div>
                 <p className="text-2xl font-bold text-on-surface mt-3">{kpi.value}</p>
-                <p className="text-sm text-on-surface-variant mt-1">{kpi.label}</p>
-              </div>
+                <p className="text-sm text-on-surface-variant mt-1 flex items-center gap-1">
+                  {kpi.label}
+                  <span className="material-symbols-outlined text-[14px] text-on-surface-variant/40 group-hover:text-primary transition-colors">
+                    arrow_outward
+                  </span>
+                </p>
+              </Link>
             ))}
           </>
         )}
