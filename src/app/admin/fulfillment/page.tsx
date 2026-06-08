@@ -668,7 +668,12 @@ export default function FulfillmentPage() {
                 {activeTab === 'new' && (
                   <>
                     <button
-                      onClick={async () => { await updateOrderStatus(order.id, 'preparing', actor ?? undefined); }}
+                      onClick={async () => {
+                        if (!confirm(locale === 'th'
+                          ? `รับออเดอร์ #${order.orderId} เริ่มเตรียม?`
+                          : `Accept order #${order.orderId} and start preparing?`)) return;
+                        await updateOrderStatus(order.id, 'preparing', actor ?? undefined);
+                      }}
                       className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-primary text-on-primary font-semibold text-sm hover:opacity-90 transition-opacity"
                     >
                       <span className="material-symbols-outlined text-[20px]">check</span>
@@ -686,7 +691,12 @@ export default function FulfillmentPage() {
                 {activeTab === 'preparing' && (
                   <>
                     <button
-                      onClick={async () => { await updateOrderStatus(order.id, 'dispatched', actor ?? undefined); }}
+                      onClick={async () => {
+                        if (!confirm(locale === 'th'
+                          ? `ยืนยันว่าแพ็คเสร็จแล้ว #${order.orderId}?`
+                          : `Mark #${order.orderId} as packed/ready?`)) return;
+                        await updateOrderStatus(order.id, 'dispatched', actor ?? undefined);
+                      }}
                       className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-primary text-on-primary font-semibold text-sm hover:opacity-90 transition-opacity"
                     >
                       <span className="material-symbols-outlined text-[20px]">local_shipping</span>
@@ -704,7 +714,12 @@ export default function FulfillmentPage() {
                 {activeTab === 'dispatched' && (
                   <>
                     <button
-                      onClick={async () => { await updateOrderStatus(order.id, 'delivered', actor ?? undefined); }}
+                      onClick={async () => {
+                        if (!confirm(locale === 'th'
+                          ? `ยืนยันว่าจัดส่งถึงสาขาแล้ว #${order.orderId}?`
+                          : `Confirm delivery for #${order.orderId}?`)) return;
+                        await updateOrderStatus(order.id, 'delivered', actor ?? undefined);
+                      }}
                       className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl bg-primary text-on-primary font-semibold text-sm hover:opacity-90 transition-opacity"
                     >
                       <span className="material-symbols-outlined text-[20px]">check_circle</span>

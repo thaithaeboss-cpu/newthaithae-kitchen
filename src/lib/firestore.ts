@@ -772,6 +772,42 @@ export async function updateOrder(id: string, data: Partial<Omit<Order, 'id' | '
   });
 }
 
+// Pull an order back one step in its status flow after an accidental
+// click. Unlike updateOrderStatus this never re-promotes the per-actor
+// fields (acceptedByUid, packedByUid, deliveredByUid) — those record
+// who originally fired the (mistaken) action and stay as audit. The
+// timeline gets a fresh 'status_changed' entry naming the reverter so
+// the history is honest about what happened.
+export async function revertOrderStatus(
+  id: string,
+  toStatus: OrderStatus,
+  actor: { uid?: string; name: string },
+): Promise<void> {
+  const docRef = doc(db, 'orders', id);
+  const snap = await getDoc(docRef);
+  if (!snap.exists()) throw new Error('Order not found');
+  const current = snap.data() as Order;
+  const fromStatus = current.status;
+  if (fromStatus === toStatus) return;
+
+  const now = new Date();
+  const entry: OrderTimelineEntry = {
+    action: 'status_changed',
+    fromStatus,
+    toStatus,
+    staffUid: actor.uid,
+    staffName: actor.name,
+    at: now,
+    note: `Reverted: ${fromStatus} → ${toStatus}`,
+  };
+
+  await updateDoc(docRef, {
+    status: toStatus,
+    updatedAt: serverTimestamp(),
+    timeline: arrayUnion({ ...entry, at: Timestamp.fromDate(now) }),
+  });
+}
+
 // Revise an existing order's line items. Caller passes the desired
 // final list (mix of original lines with adjusted qty and brand-new
 // lines), and the helper:

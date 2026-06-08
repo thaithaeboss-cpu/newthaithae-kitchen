@@ -3,7 +3,7 @@
 import { Fragment, useState, useEffect } from 'react';
 import { useOrders, useBranches } from '@/lib/useFirestore';
 import type { Order, OrderStatus } from '@/lib/firestore';
-import { loadSettings, type AppSettings } from '@/lib/firestore';
+import { loadSettings, revertOrderStatus, type AppSettings } from '@/lib/firestore';
 import { useLanguage } from '@/lib/language-context';
 import { useActor } from '@/lib/staff-context';
 import Link from 'next/link';
@@ -493,6 +493,37 @@ export default function OrdersPage() {
                                     {locale === 'th' ? 'แก้ไขรายการ' : 'Edit items'}
                                   </button>
                                 )}
+                                {(() => {
+                                  // One-step-back revert. Only offered when staff actually
+                                  // has a profile and the order is in a state that can be walked back.
+                                  const revertMap: Partial<Record<OrderStatus, { to: OrderStatus; labelTh: string; labelEn: string }>> = {
+                                    delivered:  { to: 'dispatched', labelTh: 'ย้อนกลับเป็น "กำลังจัดส่ง"',  labelEn: 'Revert to "Dispatched"' },
+                                    dispatched: { to: 'preparing',  labelTh: 'ย้อนกลับเป็น "กำลังเตรียม"',  labelEn: 'Revert to "Preparing"' },
+                                    preparing:  { to: 'new',        labelTh: 'ย้อนกลับเป็น "ออเดอร์ใหม่"',  labelEn: 'Revert to "New"' },
+                                  };
+                                  const revert = revertMap[o.status];
+                                  if (!revert || !actor) return null;
+                                  return (
+                                    <button
+                                      onClick={async (e) => {
+                                        e.stopPropagation();
+                                        if (!confirm(locale === 'th'
+                                          ? `${revert.labelTh}\nออเดอร์ #${o.orderId}\n(กดผิด/ต้องการแก้ไข?)`
+                                          : `${revert.labelEn}\nOrder #${o.orderId}\n(Pressed by mistake?)`)) return;
+                                        try {
+                                          await revertOrderStatus(o.id, revert.to, actor);
+                                        } catch (err) {
+                                          console.error('revertOrderStatus failed:', err);
+                                          alert(locale === 'th' ? 'ย้อนไม่สำเร็จ' : 'Failed to revert');
+                                        }
+                                      }}
+                                      className="inline-flex items-center gap-1.5 px-4 py-2 bg-red-50 text-red-700 rounded-lg text-sm font-medium hover:bg-red-100 transition-colors"
+                                    >
+                                      <span className="material-symbols-outlined text-[16px]">undo</span>
+                                      {locale === 'th' ? revert.labelTh : revert.labelEn}
+                                    </button>
+                                  );
+                                })()}
                                 {o.invoiceNumber && (
                                   <Link
                                     href="/admin/invoices"
