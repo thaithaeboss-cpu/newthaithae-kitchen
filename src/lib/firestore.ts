@@ -18,6 +18,7 @@ import {
   runTransaction,
   arrayUnion,
   arrayRemove,
+  deleteField,
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
@@ -142,6 +143,11 @@ export interface Order {
   deliveredByUid?: string;
   deliveredByName?: string;
   deliveredAt?: Date;
+  // Collaborative per-item checklist. Keyed by productId because items[]
+  // already enforces one line per product. Lets two packers tick items
+  // in the same order from different devices and see each other in
+  // real time, with a record of who ticked what.
+  itemChecks?: Record<string, { uid: string; name: string; at: Date }>;
   timeline?: OrderTimelineEntry[];
   createdAt: Date;
   updatedAt: Date;
@@ -770,6 +776,39 @@ export async function updateOrder(id: string, data: Partial<Omit<Order, 'id' | '
     ...data,
     updatedAt: serverTimestamp(),
   });
+}
+
+// Flip a single item's check state on an order. Used by the collaborative
+// pack-checklist in /admin/fulfillment so multiple staff can tick items
+// concurrently across devices and see each other in real time. Stores
+// who ticked it and when so the order can later show every contributor
+// in the "packed by" badge.
+export async function toggleOrderItemCheck(
+  orderDocId: string,
+  productId: string,
+  actor: { uid?: string; name: string },
+): Promise<void> {
+  const docRef = doc(db, 'orders', orderDocId);
+  const snap = await getDoc(docRef);
+  if (!snap.exists()) throw new Error('Order not found');
+  const current = snap.data() as Order;
+  const alreadyChecked = !!current.itemChecks?.[productId];
+
+  if (alreadyChecked) {
+    await updateDoc(docRef, {
+      [`itemChecks.${productId}`]: deleteField(),
+      updatedAt: serverTimestamp(),
+    });
+  } else {
+    await updateDoc(docRef, {
+      [`itemChecks.${productId}`]: {
+        uid: actor.uid ?? '',
+        name: actor.name,
+        at: Timestamp.fromDate(new Date()),
+      },
+      updatedAt: serverTimestamp(),
+    });
+  }
 }
 
 // Pull an order back one step in its status flow after an accidental

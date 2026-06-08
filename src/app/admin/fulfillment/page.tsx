@@ -3,7 +3,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import Link from 'next/link';
 import { useOrders, useBranches } from '@/lib/useFirestore';
-import { updateOrderStatus, loadSettings } from '@/lib/firestore';
+import { updateOrderStatus, loadSettings, toggleOrderItemCheck } from '@/lib/firestore';
 import type { Order, OrderStatus, AppSettings } from '@/lib/firestore';
 import { useLanguage } from '@/lib/language-context';
 import { useActor } from '@/lib/staff-context';
@@ -59,7 +59,6 @@ export default function FulfillmentPage() {
   // for that tab so the kitchen can see total qty per product across
   // every order in that bucket. null = no modal open.
   const [summaryTab, setSummaryTab] = useState<'new' | 'preparing' | null>(null);
-  const [checkedItems, setCheckedItems] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
 
   const { orders, loading: loadingOrders } = useOrders();
@@ -188,15 +187,6 @@ export default function FulfillmentPage() {
     },
   ];
 
-  const toggleCheck = (orderId: string, itemIndex: number) => {
-    const key = `${orderId}-${itemIndex}`;
-    setCheckedItems((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  };
 
   function printOrderSlip(order: Order) {
     const rows = order.items.map((item) => {
@@ -625,7 +615,7 @@ export default function FulfillmentPage() {
               </div>
 
               {/* Staff action badges */}
-              {(order.acceptedByName || order.packedByName || order.deliveredByName) && (
+              {(order.acceptedByName || order.packedByName || order.deliveredByName || (order.itemChecks && Object.keys(order.itemChecks).length > 0)) && (
                 <div className="mt-3 flex flex-wrap gap-2">
                   {order.acceptedByName && (
                     <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700 text-xs font-semibold">
@@ -638,17 +628,38 @@ export default function FulfillmentPage() {
                       )}
                     </span>
                   )}
-                  {order.packedByName && (
-                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 text-xs font-semibold">
-                      <span className="material-symbols-outlined text-[14px]">inventory_2</span>
-                      {t('packed_by')}: {order.packedByName}
-                      {order.packedAt && (
-                        <span className="text-emerald-500/70 font-normal">
-                          · {formatTime(order.packedAt)}
-                        </span>
-                      )}
-                    </span>
-                  )}
+                  {(() => {
+                    // Combine the staff who hit "Mark Ready" with everyone
+                    // who ticked at least one item in the checklist. Two
+                    // people in different rooms packing together should
+                    // both show up here.
+                    const names: string[] = [];
+                    const seen = new Set<string>();
+                    const pushName = (n?: string) => {
+                      if (!n) return;
+                      if (seen.has(n)) return;
+                      seen.add(n);
+                      names.push(n);
+                    };
+                    pushName(order.packedByName);
+                    if (order.itemChecks) {
+                      for (const c of Object.values(order.itemChecks)) {
+                        pushName(c?.name);
+                      }
+                    }
+                    if (names.length === 0) return null;
+                    return (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 text-xs font-semibold">
+                        <span className="material-symbols-outlined text-[14px]">inventory_2</span>
+                        {t('packed_by')}: {names.join(', ')}
+                        {order.packedAt && (
+                          <span className="text-emerald-500/70 font-normal">
+                            · {formatTime(order.packedAt)}
+                          </span>
+                        )}
+                      </span>
+                    );
+                  })()}
                   {order.deliveredByName && (
                     <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-purple-50 text-purple-700 text-xs font-semibold">
                       <span className="material-symbols-outlined text-[14px]">local_shipping</span>
@@ -729,8 +740,8 @@ export default function FulfillmentPage() {
                       onClick={() => setExpandedOrder(isExpanded ? null : order.id)}
                       className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl border-2 border-outline-variant text-on-surface font-semibold text-sm hover:bg-surface-container transition-colors"
                     >
-                      <span className="material-symbols-outlined text-[20px]">pin_drop</span>
-                      {t('track_delivery')}
+                      <span className="material-symbols-outlined text-[20px]">list_alt</span>
+                      {t('view_items_list')}
                     </button>
                   </>
                 )}
@@ -767,15 +778,23 @@ export default function FulfillmentPage() {
 
                   <div className="space-y-1">
                     {order.items.map((item, i) => {
-                      const checkKey = `${order.id}-${i}`;
-                      const isChecked = checkedItems.has(checkKey);
+                      const check = order.itemChecks?.[item.productId];
+                      const isChecked = !!check;
                       const displayName = locale === 'th' ? item.nameTh : (item.nameEn || item.nameTh);
                       return (
                         <button
                           key={i}
-                          onClick={() => toggleCheck(order.id, i)}
+                          onClick={async () => {
+                            if (!actor) return;
+                            try {
+                              await toggleOrderItemCheck(order.id, item.productId, actor);
+                            } catch (err) {
+                              console.error('toggleOrderItemCheck failed:', err);
+                            }
+                          }}
+                          disabled={!actor}
                           className={`
-                            w-full flex items-center gap-3 p-3 rounded-lg text-left transition-colors
+                            w-full flex items-center gap-3 p-3 rounded-lg text-left transition-colors disabled:opacity-60
                             ${isChecked ? 'bg-primary-fixed/30' : 'bg-surface-container hover:bg-surface-container-high'}
                           `}
                         >
@@ -798,6 +817,12 @@ export default function FulfillmentPage() {
                             <p className={`text-sm font-medium ${isChecked ? 'line-through text-on-surface-variant' : 'text-on-surface'}`}>
                               {displayName}
                             </p>
+                            {check && check.name && (
+                              <p className="text-[11px] text-primary mt-0.5">
+                                {locale === 'th' ? 'โดย' : 'by'}{' '}
+                                <span className="font-semibold">{check.name}</span>
+                              </p>
+                            )}
                           </div>
                           <div className="text-right shrink-0">
                             <p className={`text-sm font-bold ${isChecked ? 'text-on-surface-variant' : 'text-on-surface'}`}>
@@ -813,19 +838,22 @@ export default function FulfillmentPage() {
                   </div>
 
                   {/* Progress */}
-                  <div className="mt-4 flex items-center gap-3">
-                    <div className="flex-1 h-2 bg-surface-container-high rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-primary rounded-full transition-all duration-300"
-                        style={{
-                          width: `${(order.items.filter((_, i) => checkedItems.has(`${order.id}-${i}`)).length / order.items.length) * 100}%`,
-                        }}
-                      />
-                    </div>
-                    <p className="text-xs text-on-surface-variant shrink-0">
-                      {order.items.filter((_, i) => checkedItems.has(`${order.id}-${i}`)).length}/{order.items.length} items
-                    </p>
-                  </div>
+                  {(() => {
+                    const checkedCount = order.items.filter((it) => order.itemChecks?.[it.productId]).length;
+                    return (
+                      <div className="mt-4 flex items-center gap-3">
+                        <div className="flex-1 h-2 bg-surface-container-high rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-primary rounded-full transition-all duration-300"
+                            style={{ width: `${(checkedCount / order.items.length) * 100}%` }}
+                          />
+                        </div>
+                        <p className="text-xs text-on-surface-variant shrink-0">
+                          {checkedCount}/{order.items.length} items
+                        </p>
+                      </div>
+                    );
+                  })()}
 
                   {/* Summary */}
                   <div className="mt-4 p-3 bg-surface-container rounded-lg flex items-center justify-between text-sm">

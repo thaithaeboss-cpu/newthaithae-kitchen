@@ -154,24 +154,50 @@ export default function Header() {
                     </div>
                   ) : (
                     notifications.map((n) => {
+                      // Map every notification type to icon + tint + label
+                      // so the branch sees the full lifecycle of their order.
                       const cfg =
-                        n.type === "order_packed"
+                        n.type === "order_accepted"
                           ? {
-                              icon: "inventory_2",
-                              tint: "bg-emerald-100 text-emerald-700",
-                              title: locale === "th" ? "ออเดอร์แพ็คเสร็จแล้ว" : "Order packed",
+                              icon: "how_to_reg",
+                              tint: "bg-blue-100 text-blue-700",
+                              title: locale === "th" ? "โรงงานรับออเดอร์แล้ว" : "Order accepted",
                             }
-                          : n.type === "order_delivered"
+                          : n.type === "order_packed"
                             ? {
-                                icon: "local_shipping",
-                                tint: "bg-purple-100 text-purple-700",
-                                title: locale === "th" ? "ส่งถึงสาขาแล้ว" : "Delivered to branch",
+                                icon: "inventory_2",
+                                tint: "bg-emerald-100 text-emerald-700",
+                                title: locale === "th" ? "แพ็คเสร็จแล้ว" : "Order packed",
                               }
-                            : {
-                                icon: "shopping_bag",
-                                tint: "bg-primary/10 text-primary",
-                                title: locale === "th" ? "ออเดอร์ใหม่" : "New Order",
-                              };
+                            : n.type === "order_dispatched"
+                              ? {
+                                  icon: "local_shipping",
+                                  tint: "bg-indigo-100 text-indigo-700",
+                                  title: locale === "th" ? "ออกจัดส่ง" : "Dispatched",
+                                }
+                              : n.type === "order_delivered"
+                                ? {
+                                    icon: "task_alt",
+                                    tint: "bg-green-100 text-green-700",
+                                    title: locale === "th" ? "ส่งถึงสาขาแล้ว" : "Delivered to branch",
+                                  }
+                                : n.type === "order_revised"
+                                  ? {
+                                      icon: "edit_note",
+                                      tint: "bg-amber-100 text-amber-700",
+                                      title: locale === "th" ? "แก้ไขรายการ" : "Items revised",
+                                    }
+                                  : n.type === "order_cancelled"
+                                    ? {
+                                        icon: "cancel",
+                                        tint: "bg-red-100 text-red-700",
+                                        title: locale === "th" ? "ยกเลิกออเดอร์" : "Order cancelled",
+                                      }
+                                    : {
+                                        icon: "shopping_bag",
+                                        tint: "bg-primary/10 text-primary",
+                                        title: locale === "th" ? "ออเดอร์ใหม่" : "New Order",
+                                      };
                       // Branch users tap a notification to jump to the
                       // matching order in their history view.
                       const href = n.orderNumber

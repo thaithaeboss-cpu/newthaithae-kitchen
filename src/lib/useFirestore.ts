@@ -22,7 +22,7 @@ import type {
   AccountingEntry,
   InventoryAlert,
 } from '@/data/mock-data';
-import type { Order, Invoice, PaymentRecord, Announcement } from './firestore';
+import type { Order, Invoice, PaymentRecord, Announcement, OrderTimelineEntry } from './firestore';
 
 // Map mock-data orders (legacy format) → firestore Order format
 function adaptMockOrders(raw: mockData.Order[]): Order[] {
@@ -1071,7 +1071,16 @@ export function usePaymentsByInvoice(invoiceId: string) {
 
 export interface AppNotification {
   id: string;
-  type: 'new_order' | 'order_packed' | 'order_delivered' | 'order_status' | 'payment';
+  type:
+    | 'new_order'
+    | 'order_accepted'
+    | 'order_packed'
+    | 'order_dispatched'
+    | 'order_delivered'
+    | 'order_revised'
+    | 'order_cancelled'
+    | 'order_status'
+    | 'payment';
   title: string;
   message: string;
   orderId?: string;
@@ -1086,9 +1095,25 @@ export interface AppNotification {
 const ADMIN_LAST_SEEN_KEY = 'admin_notif_last_seen_ts';
 const branchLastSeenKey = (branchId: string) => `branch_notif_last_seen_${branchId}`;
 
-// Admin (no branchId): listens for new orders across all branches.
-// Branch (with branchId): listens for status updates (packed, delivered)
-// on their own orders only — they don't get notified about their own placements.
+// Map order timeline action → notification type. Only actions the
+// branch genuinely cares about are listed; others are skipped.
+const BRANCH_ACTION_TO_TYPE: Record<string, AppNotification['type']> = {
+  accepted: 'order_accepted',
+  packed: 'order_packed',
+  dispatched: 'order_dispatched',
+  delivered: 'order_delivered',
+  revised: 'order_revised',
+  cancelled: 'order_cancelled',
+};
+
+// Admin (no branchId): live snapshot listener — only fires for orders
+// created/modified while the app is open. Used as a "new orders just
+// came in" toast feed.
+//
+// Branch (with branchId): derives notifications from the order timeline
+// arrays of the branch's recent orders. This way the bell reflects the
+// full history of factory actions on their orders, not just events
+// that happened to land while the app was foregrounded.
 export function useNotifications(opts?: { branchId?: string }) {
   const branchId = opts?.branchId;
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
@@ -1096,6 +1121,7 @@ export function useNotifications(opts?: { branchId?: string }) {
   const knownOrderIdsRef = useRef<Set<string>>(new Set());
   // Tracks the last status we've already notified for each order, so a
   // re-emit of the same snapshot doesn't fire a duplicate notification.
+  // (Used by the admin path only.)
   const lastNotifiedStatusRef = useRef<Map<string, string>>(new Map());
   const lastSeenRef = useRef<number>(0);
 
@@ -1118,91 +1144,98 @@ export function useNotifications(opts?: { branchId?: string }) {
       }
     }
 
-    const constraints = branchId
-      ? [where('branchId', '==', branchId), orderBy('createdAt', 'desc'), firestoreLimit(20)]
-      : [orderBy('createdAt', 'desc'), firestoreLimit(20)];
-    const q = query(collection(db, 'orders'), ...constraints);
+    // ====================================================
+    // Branch path: derive from order.timeline[]
+    // ====================================================
+    if (branchId) {
+      const q = query(
+        collection(db, 'orders'),
+        where('branchId', '==', branchId),
+        orderBy('createdAt', 'desc'),
+        firestoreLimit(30),
+      );
+      const unsubscribe = onSnapshot(
+        q,
+        (snapshot) => {
+          const items: AppNotification[] = [];
+          for (const docSnap of snapshot.docs) {
+            const data = docSnap.data();
+            const timeline = (data.timeline ?? []) as OrderTimelineEntry[];
+            const orderDocId = docSnap.id;
+            const orderNumber = (data.orderId as string) || '';
+            const branchName = (data.branchName as string) || '';
+            const total = (data.total as number) || 0;
+
+            for (let i = 0; i < timeline.length; i++) {
+              const entry = timeline[i];
+              const notifType = BRANCH_ACTION_TO_TYPE[entry.action as string];
+              if (!notifType) continue;
+              const at =
+                entry.at instanceof Timestamp
+                  ? entry.at.toDate()
+                  : new Date(entry.at as unknown as string);
+              items.push({
+                id: `${orderDocId}-${i}`,
+                type: notifType,
+                title: '',
+                message: entry.note ?? '',
+                orderId: orderDocId,
+                orderNumber,
+                branchName,
+                total,
+                actorName: entry.staffName,
+                timestamp: at,
+                read: at.getTime() <= lastSeenRef.current,
+              });
+            }
+          }
+          items.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+          const top = items.slice(0, 30);
+          setNotifications(top);
+          setUnreadCount(top.filter((n) => !n.read).length);
+        },
+        (err) => {
+          console.error('useNotifications (branch) error:', err);
+        },
+      );
+      return () => unsubscribe();
+    }
+
+    // ====================================================
+    // Admin path: live snapshot diff for new_order toasts
+    // ====================================================
+    const q = query(
+      collection(db, 'orders'),
+      orderBy('createdAt', 'desc'),
+      firestoreLimit(20),
+    );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const newNotifs: AppNotification[] = [];
       snapshot.docChanges().forEach((change) => {
+        if (change.type !== 'added') return;
         const data = change.doc.data();
-        const status = (data.status as string) || '';
         const orderDocId = change.doc.id;
+        if (knownOrderIdsRef.current.has(orderDocId)) return;
+        knownOrderIdsRef.current.add(orderDocId);
 
         const createdAt = data.createdAt instanceof Timestamp
           ? data.createdAt.toDate()
           : new Date(data.createdAt);
-        const updatedAt = data.updatedAt instanceof Timestamp
-          ? data.updatedAt.toDate()
-          : data.updatedAt
-            ? new Date(data.updatedAt)
-            : createdAt;
+        if (createdAt.getTime() <= lastSeenRef.current) return;
 
-        if (change.type === 'added') {
-          if (knownOrderIdsRef.current.has(orderDocId)) return;
-          knownOrderIdsRef.current.add(orderDocId);
-          // Seed the status tracker so we don't re-fire on the next snapshot.
-          lastNotifiedStatusRef.current.set(orderDocId, status);
-
-          // Branch side doesn't notify itself about its own new order.
-          if (branchId) return;
-          if (createdAt.getTime() <= lastSeenRef.current) return;
-
-          newNotifs.push({
-            id: `order-${orderDocId}`,
-            type: 'new_order',
-            title: '',
-            message: '',
-            orderId: orderDocId,
-            orderNumber: data.orderId || '',
-            branchName: data.branchName || '',
-            total: data.total || 0,
-            timestamp: createdAt,
-            read: false,
-          });
-          return;
-        }
-
-        if (change.type === 'modified') {
-          const prevStatus = lastNotifiedStatusRef.current.get(orderDocId);
-          if (prevStatus === status) return; // no transition we care about
-          lastNotifiedStatusRef.current.set(orderDocId, status);
-
-          // Branch users only — admin sidebar keeps showing just new_order.
-          if (!branchId) return;
-          if (updatedAt.getTime() <= lastSeenRef.current) return;
-
-          if (status === 'dispatched') {
-            newNotifs.push({
-              id: `packed-${orderDocId}`,
-              type: 'order_packed',
-              title: '',
-              message: '',
-              orderId: orderDocId,
-              orderNumber: data.orderId || '',
-              branchName: data.branchName || '',
-              total: data.total || 0,
-              actorName: data.packedByName || '',
-              timestamp: updatedAt,
-              read: false,
-            });
-          } else if (status === 'delivered') {
-            newNotifs.push({
-              id: `delivered-${orderDocId}`,
-              type: 'order_delivered',
-              title: '',
-              message: '',
-              orderId: orderDocId,
-              orderNumber: data.orderId || '',
-              branchName: data.branchName || '',
-              total: data.total || 0,
-              actorName: data.deliveredByName || '',
-              timestamp: updatedAt,
-              read: false,
-            });
-          }
-        }
+        newNotifs.push({
+          id: `order-${orderDocId}`,
+          type: 'new_order',
+          title: '',
+          message: '',
+          orderId: orderDocId,
+          orderNumber: data.orderId || '',
+          branchName: data.branchName || '',
+          total: data.total || 0,
+          timestamp: createdAt,
+          read: false,
+        });
       });
 
       if (newNotifs.length > 0) {
