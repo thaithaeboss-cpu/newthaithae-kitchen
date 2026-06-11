@@ -11,14 +11,61 @@ import { onAuthStateChanged, signOut } from "firebase/auth";
 import { collection, query, where, getDocs, limit } from "firebase/firestore";
 import { isOwnerEmail } from "@/lib/owner";
 
+// localStorage keys for the per-email branch resolution cache. Stores
+// the most recent email → branchId pairing so a returning user can render
+// the dashboard immediately while Firebase Auth + the branches query are
+// still warming up.
+const CACHED_EMAIL_KEY = 'branch_cache_email';
+const CACHED_BRANCH_KEY = 'branch_cache_id';
+
+function readCachedBranch(email: string | null | undefined): string | null {
+  if (typeof window === 'undefined' || !email) return null;
+  try {
+    const cachedEmail = window.localStorage.getItem(CACHED_EMAIL_KEY);
+    if (cachedEmail !== email.toLowerCase()) return null;
+    return window.localStorage.getItem(CACHED_BRANCH_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedBranch(email: string, branchId: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(CACHED_EMAIL_KEY, email.toLowerCase());
+    window.localStorage.setItem(CACHED_BRANCH_KEY, branchId);
+  } catch {}
+}
+
+function clearCachedBranch() {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(CACHED_EMAIL_KEY);
+    window.localStorage.removeItem(CACHED_BRANCH_KEY);
+  } catch {}
+}
+
 function AuthReady({ children }: { children: React.ReactNode }) {
   const { setBranchId } = useBranchContext();
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // Optimistic paint: if we already have a current Firebase user (from
+    // restored session) and a cached branchId for that email, render
+    // immediately. The onAuthStateChanged listener below still runs and
+    // refreshes the cache against the real branches collection so we
+    // catch any reassignment.
+    const current = auth.currentUser;
+    const optimisticBranch = readCachedBranch(current?.email);
+    if (current && optimisticBranch) {
+      setBranchId(optimisticBranch);
+      setReady(true);
+    }
+
     const unsub = onAuthStateChanged(auth, async (user) => {
       if (!user || !user.email) {
+        clearCachedBranch();
         // Not signed in — redirect to login
         window.location.href = '/login/';
         return;
@@ -32,24 +79,40 @@ function AuthReady({ children }: { children: React.ReactNode }) {
         return;
       }
 
+      const email = user.email.toLowerCase();
+
+      // Cache hit on the just-resolved auth user — render now if we
+      // didn't already in the synchronous block above.
+      const cached = readCachedBranch(email);
+      if (cached) {
+        setBranchId(cached);
+        setReady(true);
+      }
+
       try {
-        // Find which branch this email owns
+        // Verify against Firestore. Hits the persistent cache instantly
+        // when present, network otherwise.
         const q = query(
           collection(db, 'branches'),
-          where('ownerEmail', '==', user.email.toLowerCase()),
+          where('ownerEmail', '==', email),
           limit(1),
         );
         const snap = await getDocs(q);
         if (snap.empty) {
-          setError(`บัญชี ${user.email} ยังไม่ได้ผูกกับสาขาใด\nกรุณาติดต่อผู้ดูแลระบบ`);
+          clearCachedBranch();
+          if (!cached) {
+            setError(`บัญชี ${user.email} ยังไม่ได้ผูกกับสาขาใด\nกรุณาติดต่อผู้ดูแลระบบ`);
+          }
           return;
         }
         const branchDoc = snap.docs[0];
+        writeCachedBranch(email, branchDoc.id);
         setBranchId(branchDoc.id);
         setReady(true);
       } catch (err) {
         console.error('Branch resolve error:', err);
-        setError('โหลดข้อมูลสาขาไม่ได้');
+        // Only show the error screen if we couldn't paint from cache.
+        if (!cached) setError('โหลดข้อมูลสาขาไม่ได้');
       }
     });
     return () => unsub();

@@ -1,5 +1,11 @@
 import { initializeApp, getApps } from 'firebase/app';
-import { getFirestore } from 'firebase/firestore';
+import {
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  type Firestore,
+} from 'firebase/firestore';
 import { getAuth, setPersistence, browserLocalPersistence, indexedDBLocalPersistence } from 'firebase/auth';
 import { getStorage } from 'firebase/storage';
 
@@ -14,7 +20,24 @@ const firebaseConfig = {
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
 
-export const db = getFirestore(app);
+// Initialize Firestore with persistent local cache on the client so reads
+// hit indexedDB first and subsequent app opens paint instantly. Falls back
+// to the in-memory default when not in a browser (build prerender) or
+// when indexedDB is unavailable (private browsing, old Safari, etc).
+function initDb(): Firestore {
+  if (typeof window === 'undefined') return getFirestore(app);
+  try {
+    return initializeFirestore(app, {
+      localCache: persistentLocalCache({
+        tabManager: persistentMultipleTabManager(),
+      }),
+    });
+  } catch {
+    return getFirestore(app);
+  }
+}
+
+export const db = initDb();
 export const auth = getAuth(app);
 export const storage = getStorage(app);
 
