@@ -60,6 +60,15 @@ export default function FulfillmentPage() {
   // every order in that bucket. null = no modal open.
   const [summaryTab, setSummaryTab] = useState<'new' | 'preparing' | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  // Combined-print selection: a set of order ids the user has ticked to
+  // print on a single picking slip. Display-only — never mutates orders.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // Reset the selection whenever we switch tabs so stale picks from another
+  // bucket don't linger.
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [activeTab]);
 
   const { orders, loading: loadingOrders } = useOrders();
   const { branches } = useBranches();
@@ -144,6 +153,39 @@ export default function FulfillmentPage() {
     }
     return result;
   }, [activeTab, ordersByTab, searchQuery]);
+
+  // --- combined-print selection helpers --------------------------------
+  const selectedOrders = useMemo(
+    () => filteredOrders.filter((o) => selectedIds.has(o.id)),
+    [filteredOrders, selectedIds],
+  );
+  // A combined slip always belongs to one branch (one "Bill To"). The first
+  // ticked order fixes the branch; other branches' checkboxes get disabled.
+  const selectionBranchId = selectedOrders[0]?.branchId ?? null;
+
+  function toggleSelect(order: Order) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(order.id)) next.delete(order.id);
+      else next.add(order.id);
+      return next;
+    });
+  }
+
+  // Suggest combining: any branch with 2+ orders on the same calendar day
+  // inside the current tab. Clicking the chip ticks exactly that group.
+  type CombineGroup = { branchId: string; branchName: string; orderIds: string[] };
+  const combineSuggestions = useMemo<CombineGroup[]>(() => {
+    const map = new Map<string, CombineGroup>();
+    for (const o of filteredOrders) {
+      const dateKey = new Date(o.createdAt as unknown as string).toISOString().slice(0, 10);
+      const key = `${o.branchId}|${dateKey}`;
+      const g = map.get(key);
+      if (g) g.orderIds.push(o.id);
+      else map.set(key, { branchId: o.branchId, branchName: o.branchName, orderIds: [o.id] });
+    }
+    return Array.from(map.values()).filter((g) => g.orderIds.length >= 2);
+  }, [filteredOrders]);
 
   const completedToday = orders.filter((o) => o.status === 'delivered').length;
 
@@ -297,6 +339,167 @@ export default function FulfillmentPage() {
       ${order.notes ? `<div style="margin-top:16px;padding:10px 14px;background:#fffbeb;border-radius:6px;font-size:12px;color:#92400e;"><strong>${locale === 'th' ? 'หมายเหตุ' : 'Note'}:</strong> ${order.notes}</div>` : ''}
       ${bankHtml}
       <div class="footer">${coName}${coTaxId ? ` &nbsp;·&nbsp; ABN/Tax ID: ${coTaxId}` : ''} &nbsp;·&nbsp; ${locale === 'th' ? 'พิมพ์เมื่อ' : 'Printed'}: ${new Date().toLocaleString(locale === 'th' ? 'th-TH' : 'en-AU')}</div>
+    </body></html>`;
+
+    const w = window.open('', '_blank', 'width=700,height=900');
+    if (!w) return;
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+    w.print();
+    w.onafterprint = () => w.close();
+  }
+
+  // Print ONE picking slip that merges several orders from the same branch.
+  // Line items are summed per product. Purely a print view — the underlying
+  // orders are never touched, so invoices/accounting/stock/branch history
+  // all stay exactly as they were.
+  function printCombinedSlip(ordersToMerge: Order[]) {
+    if (ordersToMerge.length === 0) return;
+
+    // Merge line items by productId, summing quantity + amount.
+    const map = new Map<string, { nameTh: string; nameEn: string; unit: string; quantity: number; total: number }>();
+    for (const order of ordersToMerge) {
+      for (const item of order.items) {
+        const ex = map.get(item.productId);
+        if (ex) {
+          ex.quantity += item.quantity;
+          ex.total += item.total;
+        } else {
+          map.set(item.productId, {
+            nameTh: item.nameTh,
+            nameEn: item.nameEn,
+            unit: item.unit,
+            quantity: item.quantity,
+            total: item.total,
+          });
+        }
+      }
+    }
+    const merged = Array.from(map.values());
+    const grandTotal = ordersToMerge.reduce((s, o) => s + o.total, 0);
+
+    const rows = merged.map((item) => {
+      const name = locale === 'th' ? item.nameTh : (item.nameEn || item.nameTh);
+      return `<tr>
+        <td style="padding:8px 12px;border-bottom:1px solid #e5e7eb;">${name}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #e5e7eb;text-align:center;font-weight:600;">${item.quantity} ${item.unit}</td>
+        <td style="padding:8px 12px;border-bottom:1px solid #e5e7eb;text-align:right;">฿${formatCurrency(item.total)}</td>
+      </tr>`;
+    }).join('');
+
+    const first = ordersToMerge[0];
+    const branch = branches.find((b) => b.id === first.branchId);
+    const branchAddress = branch?.address ?? '';
+    const branchPhone = branch?.phone ?? '';
+
+    const orderNumbers = ordersToMerge.map((o) => `#${o.orderId}`).join(' + ');
+    const orderLines = ordersToMerge
+      .map((o) => {
+        const created = new Date(o.createdAt as unknown as string)
+          .toLocaleString(locale === 'th' ? 'th-TH' : 'en-AU');
+        return `<div style="font-size:11px;color:#555;">#${o.orderId} · ${created} · ฿${formatCurrency(o.total)}</div>`;
+      })
+      .join('');
+
+    const combinedNotes = ordersToMerge
+      .filter((o) => o.notes)
+      .map((o) => `#${o.orderId}: ${o.notes}`)
+      .join(' · ');
+
+    const co = settings;
+    const bankHtml = (co?.bankAccountNumber)
+      ? `<div style="margin-top:10px;padding:5px 10px;background:#f0fdf4;border-radius:6px;border:1px solid #bbf7d0;font-size:10px;line-height:1.5;color:#374151;">
+          <span style="font-weight:700;color:#166534;text-transform:uppercase;letter-spacing:.04em;margin-right:6px;">${locale === 'th' ? 'การชำระ' : 'Payment'}</span>
+          ${[
+            co.bankName ? `<strong>${co.bankName}</strong>` : null,
+            co.bankAccountName,
+            co.bankBsb ? `BSB <span style="font-family:monospace;">${co.bankBsb}</span>` : null,
+            `${locale === 'th' ? 'เลข' : 'Acct'} <span style="font-family:monospace;font-weight:700;color:#166534;">${co.bankAccountNumber}</span>`,
+          ].filter(Boolean).join(' · ')}
+        </div>`
+      : '';
+
+    const logoHtml = co?.logoUrl
+      ? `<img src="${co.logoUrl}" alt="logo" style="height:56px;object-fit:contain;"/>`
+      : '';
+    const coName = co?.companyName ?? 'Thai Thae';
+    const coAddress = co?.companyAddress ?? '';
+    const coTaxId = co?.taxId ?? '';
+
+    const html = `<!DOCTYPE html><html><head>
+      <meta charset="utf-8"/>
+      <title>${locale === 'th' ? 'ใบสั่งซื้อรวม' : 'Combined Order'} ${orderNumbers}</title>
+      <style>
+        * { box-sizing: border-box; }
+        body { font-family: sans-serif; font-size: 13px; color: #111; }
+        .header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 16px; border-bottom: 2px solid #111; margin-bottom: 20px; }
+        .company { flex: 1; }
+        .company h1 { margin: 0 0 2px; font-size: 18px; }
+        .company p { margin: 2px 0; font-size: 12px; color: #555; }
+        .order-title { text-align: right; }
+        .order-title h2 { margin: 0 0 4px; font-size: 22px; color: #00342b; }
+        .order-title p { margin: 2px 0; font-size: 12px; color: #555; }
+        .merge-badge { display:inline-block; margin-bottom:6px; padding:3px 10px; border-radius:999px; background:#ecfdf5; color:#166534; font-size:11px; font-weight:700; }
+        .bill-section { display: flex; gap: 32px; margin-bottom: 20px; }
+        .bill-box { flex: 1; background: #f9fafb; border-radius: 8px; padding: 12px 14px; }
+        .bill-box h4 { margin: 0 0 6px; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: #888; }
+        .bill-box p { margin: 2px 0; font-size: 13px; font-weight: 600; }
+        .bill-box .sub { font-weight: 400; color: #555; font-size: 12px; }
+        table { width: 100%; border-collapse: collapse; }
+        thead tr { background: #f3f4f6; }
+        th { padding: 8px 12px; text-align: left; font-size: 11px; color: #666; text-transform: uppercase; letter-spacing:.05em; }
+        .total-row td { padding: 12px 12px; font-weight: bold; font-size: 15px; border-top: 2px solid #111; }
+        .footer { margin-top: 32px; padding-top: 12px; border-top: 1px solid #e5e7eb; font-size: 11px; color: #888; text-align: center; }
+        @page { margin: 15mm; size: A4; }
+        @media print { body { margin: 0; } }
+      </style>
+    </head><body>
+      <div class="header">
+        <div class="company">
+          ${logoHtml}
+          <h1 style="margin-top:${co?.logoUrl ? '8px' : '0'}">${coName}</h1>
+          ${coAddress ? `<p>${coAddress}</p>` : ''}
+          ${coTaxId ? `<p>ABN / Tax ID: ${coTaxId}</p>` : ''}
+        </div>
+        <div class="order-title">
+          <span class="merge-badge">${locale === 'th' ? `รวม ${ordersToMerge.length} ออเดอร์` : `${ordersToMerge.length} orders combined`}</span>
+          <h2>${locale === 'th' ? 'ใบสั่งซื้อ (รวม)' : 'Combined Order'}</h2>
+          ${orderLines}
+        </div>
+      </div>
+
+      <div class="bill-section">
+        <div class="bill-box">
+          <h4>${locale === 'th' ? 'จาก (ผู้ขาย)' : 'From (Supplier)'}</h4>
+          <p>${coName}</p>
+          ${coAddress ? `<p class="sub">${coAddress}</p>` : ''}
+        </div>
+        <div class="bill-box">
+          <h4>${locale === 'th' ? 'ถึง (สาขา)' : 'Bill To (Branch)'}</h4>
+          <p>${first.branchName}</p>
+          ${branchAddress ? `<p class="sub">${branchAddress}</p>` : ''}
+          ${branchPhone ? `<p class="sub">Tel: ${branchPhone}</p>` : ''}
+        </div>
+      </div>
+
+      <table>
+        <thead><tr>
+          <th>${locale === 'th' ? 'รายการสินค้า' : 'Item'}</th>
+          <th style="text-align:center">${locale === 'th' ? 'จำนวนรวม' : 'Total Qty'}</th>
+          <th style="text-align:right">${locale === 'th' ? 'ราคา' : 'Amount'}</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot>
+          <tr class="total-row">
+            <td colspan="2" style="text-align:right">${locale === 'th' ? 'รวมทั้งสิ้น' : 'Grand Total'}</td>
+            <td style="text-align:right;color:#00342b;">฿${formatCurrency(grandTotal)}</td>
+          </tr>
+        </tfoot>
+      </table>
+      ${combinedNotes ? `<div style="margin-top:16px;padding:10px 14px;background:#fffbeb;border-radius:6px;font-size:12px;color:#92400e;"><strong>${locale === 'th' ? 'หมายเหตุ' : 'Note'}:</strong> ${combinedNotes}</div>` : ''}
+      ${bankHtml}
+      <div class="footer">${coName}${coTaxId ? ` &nbsp;·&nbsp; ABN/Tax ID: ${coTaxId}` : ''} &nbsp;·&nbsp; ${locale === 'th' ? 'รวมจากออเดอร์' : 'Merged from'}: ${orderNumbers} &nbsp;·&nbsp; ${locale === 'th' ? 'พิมพ์เมื่อ' : 'Printed'}: ${new Date().toLocaleString(locale === 'th' ? 'th-TH' : 'en-AU')}</div>
     </body></html>`;
 
     const w = window.open('', '_blank', 'width=700,height=900');
@@ -499,6 +702,42 @@ export default function FulfillmentPage() {
         </nav>
       </div>
 
+      {/* Combine suggestion banner — surfaces branches that ordered more than
+          once in the same day so the kitchen can print one merged slip. */}
+      {!loadingOrders && combineSuggestions.length > 0 && (
+        <div className="rounded-xl border border-primary/30 bg-primary/5 px-4 py-3">
+          <div className="flex items-start gap-2">
+            <span className="material-symbols-outlined text-primary text-[20px] mt-0.5">lightbulb</span>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-on-surface">
+                {locale === 'th' ? 'มีสาขาที่สั่งหลายรอบในวันเดียวกัน' : 'Some branches ordered more than once today'}
+              </p>
+              <p className="text-xs text-on-surface-variant mt-0.5">
+                {locale === 'th'
+                  ? 'เลือกเพื่อพิมพ์ใบจัดของรวมเป็นใบเดียว (ออเดอร์ยังแยกเหมือนเดิม)'
+                  : 'Tap to print one combined picking slip (orders stay separate)'}
+              </p>
+              <div className="flex flex-wrap gap-2 mt-2">
+                {combineSuggestions.map((g) => (
+                  <button
+                    key={`${g.branchId}-${g.orderIds.length}`}
+                    type="button"
+                    onClick={() => setSelectedIds(new Set(g.orderIds))}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-container-lowest border border-primary/30 text-xs font-semibold text-on-surface hover:bg-primary/10 transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-[15px]">store</span>
+                    {g.branchName}
+                    <span className="px-1.5 py-0.5 rounded-full bg-primary/15 text-primary">
+                      {g.orderIds.length} {locale === 'th' ? 'ออเดอร์' : 'orders'}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Order Cards */}
       <div className="space-y-4">
         {/* Loading skeleton */}
@@ -548,14 +787,40 @@ export default function FulfillmentPage() {
           const isExpanded = expandedOrder === order.id;
           const previewItems = order.items.slice(0, 4);
           const moreCount = order.items.length - 4;
+          const isSelected = selectedIds.has(order.id);
+          // Lock checkboxes to a single branch so a combined slip never mixes
+          // two "Bill To" addresses.
+          const selDisabled =
+            selectionBranchId !== null && order.branchId !== selectionBranchId && !isSelected;
 
           return (
             <div
               key={order.id}
-              className="bg-surface-container-lowest rounded-xl p-6 border border-outline-variant/30 transition-shadow hover:shadow-md"
+              className={`bg-surface-container-lowest rounded-xl p-6 border transition-shadow hover:shadow-md ${
+                isSelected
+                  ? 'border-primary ring-2 ring-primary/20'
+                  : 'border-outline-variant/30'
+              }`}
             >
-              {/* Top Row: Branch badge + urgency */}
+              {/* Top Row: select checkbox + branch badge + urgency */}
               <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => toggleSelect(order)}
+                  disabled={selDisabled}
+                  title={
+                    selDisabled
+                      ? (locale === 'th' ? 'รวมได้เฉพาะออเดอร์ของสาขาเดียวกัน' : 'You can only combine orders from the same branch')
+                      : (locale === 'th' ? 'เลือกเพื่อพิมพ์รวม' : 'Select to combine for printing')
+                  }
+                  className={`w-6 h-6 rounded-md border-2 flex items-center justify-center shrink-0 transition-colors disabled:opacity-30 ${
+                    isSelected ? 'bg-primary border-primary' : 'border-outline-variant hover:border-primary'
+                  }`}
+                >
+                  {isSelected && (
+                    <span className="material-symbols-outlined text-on-primary text-[16px]">check</span>
+                  )}
+                </button>
                 <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-surface-container text-xs font-bold text-on-surface-variant tracking-wide">
                   <span className="material-symbols-outlined text-[14px]">store</span>
                   {t('branch')} {branchCode}
@@ -971,6 +1236,47 @@ export default function FulfillmentPage() {
                 {locale === 'th' ? 'ปิด' : 'Close'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Combined-print floating bar — appears once at least one order is
+          ticked. Printing merges the picks onto a single slip; nothing is
+          written back to Firestore. */}
+      {selectedIds.size > 0 && (
+        <div className="fixed inset-x-0 bottom-0 z-40 px-4 pb-4 pointer-events-none">
+          <div className="pointer-events-auto max-w-2xl mx-auto bg-on-surface text-surface rounded-2xl shadow-xl flex items-center gap-3 px-4 py-3">
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold">
+                {locale === 'th'
+                  ? `เลือก ${selectedIds.size} ออเดอร์`
+                  : `${selectedIds.size} order${selectedIds.size > 1 ? 's' : ''} selected`}
+                {selectedOrders[0] && (
+                  <span className="opacity-70 font-normal"> · {selectedOrders[0].branchName}</span>
+                )}
+              </p>
+              {selectedIds.size < 2 && (
+                <p className="text-xs opacity-70">
+                  {locale === 'th' ? 'เลือกอีกออเดอร์เพื่อพิมพ์รวม' : 'Pick one more order to combine'}
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setSelectedIds(new Set())}
+              className="px-3 py-2 rounded-xl text-sm font-medium hover:bg-surface/10 transition-colors"
+            >
+              {locale === 'th' ? 'ล้าง' : 'Clear'}
+            </button>
+            <button
+              type="button"
+              onClick={() => printCombinedSlip(selectedOrders)}
+              disabled={selectedIds.size < 2}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-primary text-on-primary text-sm font-semibold hover:opacity-90 disabled:opacity-40 transition-opacity"
+            >
+              <span className="material-symbols-outlined text-[18px]">print</span>
+              {locale === 'th' ? 'พิมพ์รวม' : 'Print combined'}
+            </button>
           </div>
         </div>
       )}
