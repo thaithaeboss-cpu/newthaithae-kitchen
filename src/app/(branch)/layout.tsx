@@ -10,6 +10,7 @@ import { auth, db } from "@/lib/firebase";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { collection, query, where, getDocs, limit } from "firebase/firestore";
 import { isOwnerEmail } from "@/lib/owner";
+import { getStaffByUid, getStaffByEmail } from "@/lib/firestore";
 
 // localStorage keys for the per-email branch resolution cache. Stores
 // the most recent email → branchId pairing so a returning user can render
@@ -45,6 +46,36 @@ function clearCachedBranch() {
   } catch {}
 }
 
+// Remembers the last email we resolved as a factory staff account (a /staff
+// profile, no branch). The PWA start_url is "/", so staff land on the branch
+// app first — caching this lets us bounce them straight to /admin/ on the
+// next launch without two Firestore round-trips (branches query + staff
+// lookup). /admin re-verifies via StaffProvider, so a stale flag self-heals.
+const CACHED_STAFF_EMAIL_KEY = 'branch_staff_redirect_email';
+
+function isCachedStaff(email: string | null | undefined): boolean {
+  if (typeof window === 'undefined' || !email) return false;
+  try {
+    return window.localStorage.getItem(CACHED_STAFF_EMAIL_KEY) === email.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+function writeCachedStaff(email: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(CACHED_STAFF_EMAIL_KEY, email.toLowerCase());
+  } catch {}
+}
+
+function clearCachedStaff() {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(CACHED_STAFF_EMAIL_KEY);
+  } catch {}
+}
+
 function AuthReady({ children }: { children: React.ReactNode }) {
   const { setBranchId } = useBranchContext();
   const [ready, setReady] = useState(false);
@@ -57,6 +88,12 @@ function AuthReady({ children }: { children: React.ReactNode }) {
     // refreshes the cache against the real branches collection so we
     // catch any reassignment.
     const current = auth.currentUser;
+    // Known factory-staff account from a previous session — bounce to
+    // /admin/* synchronously before we even paint the spinner.
+    if (current && isCachedStaff(current.email)) {
+      window.location.href = '/admin/';
+      return;
+    }
     const optimisticBranch = readCachedBranch(current?.email);
     if (current && optimisticBranch) {
       setBranchId(optimisticBranch);
@@ -66,6 +103,7 @@ function AuthReady({ children }: { children: React.ReactNode }) {
     const unsub = onAuthStateChanged(auth, async (user) => {
       if (!user || !user.email) {
         clearCachedBranch();
+        clearCachedStaff();
         // Not signed in — redirect to login
         window.location.href = '/login/';
         return;
@@ -80,6 +118,13 @@ function AuthReady({ children }: { children: React.ReactNode }) {
       }
 
       const email = user.email.toLowerCase();
+
+      // Known factory-staff account — skip the branches query + staff lookup
+      // entirely and bounce straight to /admin/*.
+      if (isCachedStaff(email)) {
+        window.location.href = '/admin/';
+        return;
+      }
 
       // Cache hit on the just-resolved auth user — render now if we
       // didn't already in the synchronous block above.
@@ -100,6 +145,20 @@ function AuthReady({ children }: { children: React.ReactNode }) {
         const snap = await getDocs(q);
         if (snap.empty) {
           clearCachedBranch();
+          // Not a branch owner. Before showing the "not linked to a branch"
+          // wall, check whether they're a factory staff member (a /staff
+          // profile exists). The PWA start_url is "/", so kitchen/packing/
+          // delivery staff land here too — bounce them to /admin/* instead,
+          // where the admin layout routes them by role. Mirrors how /admin/*
+          // bounces branch accounts back to "/".
+          const staffProfile =
+            (await getStaffByUid(user.uid)) ??
+            (await getStaffByEmail(email));
+          if (staffProfile) {
+            writeCachedStaff(email);
+            window.location.href = '/admin/';
+            return;
+          }
           if (!cached) {
             setError(`บัญชี ${user.email} ยังไม่ได้ผูกกับสาขาใด\nกรุณาติดต่อผู้ดูแลระบบ`);
           }
@@ -107,6 +166,7 @@ function AuthReady({ children }: { children: React.ReactNode }) {
         }
         const branchDoc = snap.docs[0];
         writeCachedBranch(email, branchDoc.id);
+        clearCachedStaff(); // self-heal: this email is a branch owner, not staff
         setBranchId(branchDoc.id);
         setReady(true);
       } catch (err) {
@@ -119,6 +179,7 @@ function AuthReady({ children }: { children: React.ReactNode }) {
   }, [setBranchId]);
 
   async function handleSignOut() {
+    clearCachedStaff();
     await signOut(auth);
     window.location.href = '/login/';
   }

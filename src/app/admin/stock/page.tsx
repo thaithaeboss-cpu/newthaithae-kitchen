@@ -1,10 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { useProducts, useStockAdjustments } from '@/lib/useFirestore';
 import { updateStock } from '@/lib/firestore';
 import { useLanguage } from '@/lib/language-context';
+import { productCategories } from '@/data/mock-data';
+import type { ProductCategory } from '@/data/mock-data';
 
 const stockMovement = [
   { month: 'ก.ค.', inbound: 450, outbound: 380 },
@@ -26,6 +28,39 @@ export default function StockPage() {
   const [adjReason, setAdjReason] = useState('');
   const [adjNotes, setAdjNotes] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // Searchable product picker: filter by category + free-text search instead of
+  // scrolling a long native <select>.
+  const [categoryFilter, setCategoryFilter] = useState<ProductCategory | 'all'>('all');
+  const [productSearch, setProductSearch] = useState('');
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerRef = useRef<HTMLDivElement>(null);
+
+  // Close the dropdown when clicking outside the picker.
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
+        setPickerOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const selectedProductObj = products.find((p) => p.id === selectedProduct);
+
+  const filteredProducts = useMemo(() => {
+    const term = productSearch.trim().toLowerCase();
+    return products.filter((p) => {
+      const matchCategory = categoryFilter === 'all' || p.category === categoryFilter;
+      const matchSearch =
+        !term ||
+        p.nameTh.toLowerCase().includes(term) ||
+        p.nameEn.toLowerCase().includes(term) ||
+        p.sku.toLowerCase().includes(term);
+      return matchCategory && matchSearch;
+    });
+  }, [products, categoryFilter, productSearch]);
 
   // Compute stats from live products list
   const totalProducts = products.length;
@@ -75,6 +110,7 @@ export default function StockPage() {
       const reasonText = adjReason + (adjNotes ? ` — ${adjNotes}` : '');
       await updateStock(selectedProduct, signedQty, reasonText);
       setSelectedProduct('');
+      setProductSearch('');
       setAdjQuantity(0);
       setAdjReason('');
       setAdjNotes('');
@@ -128,18 +164,88 @@ export default function StockPage() {
           <div className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-on-surface mb-1">{t('select_product_placeholder')}</label>
-              <select
-                value={selectedProduct}
-                onChange={(e) => setSelectedProduct(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-lg border border-outline-variant/50 bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
-              >
-                <option value="">-- {t('select_product_placeholder')} --</option>
-                {products.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.nameTh} ({p.sku})
-                  </option>
-                ))}
-              </select>
+              <div className="flex gap-2">
+                {/* Category filter narrows the searchable list */}
+                <select
+                  value={categoryFilter}
+                  onChange={(e) => setCategoryFilter(e.target.value as ProductCategory | 'all')}
+                  className="shrink-0 px-3 py-2.5 rounded-lg border border-outline-variant/50 bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                >
+                  <option value="all">{t('all_categories_filter')}</option>
+                  {productCategories.map((c) => (
+                    <option key={c.key} value={c.key}>
+                      {locale === 'th' ? c.nameTh : c.nameEn}
+                    </option>
+                  ))}
+                </select>
+
+                {/* Type-to-search combobox */}
+                <div ref={pickerRef} className="relative flex-1">
+                  <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-[18px] text-on-surface-variant/60 pointer-events-none">
+                    search
+                  </span>
+                  <input
+                    type="text"
+                    value={pickerOpen ? productSearch : (selectedProductObj ? `${locale === 'th' ? selectedProductObj.nameTh : selectedProductObj.nameEn} (${selectedProductObj.sku})` : '')}
+                    onFocus={() => {
+                      setPickerOpen(true);
+                      setProductSearch('');
+                    }}
+                    onChange={(e) => {
+                      setProductSearch(e.target.value);
+                      setPickerOpen(true);
+                    }}
+                    placeholder={t('search_products')}
+                    className="w-full pl-9 pr-9 py-2.5 rounded-lg border border-outline-variant/50 bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                  />
+                  {selectedProduct && !pickerOpen && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedProduct('');
+                        setProductSearch('');
+                      }}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center rounded-full text-on-surface-variant/60 hover:bg-surface-container-high"
+                    >
+                      <span className="material-symbols-outlined text-[18px]">close</span>
+                    </button>
+                  )}
+                  {pickerOpen && (
+                    <div className="absolute z-20 mt-1 w-full max-h-64 overflow-y-auto rounded-lg border border-outline-variant/50 bg-surface-container-lowest shadow-lg">
+                      {filteredProducts.length === 0 ? (
+                        <div className="px-3 py-4 text-center text-sm text-on-surface-variant">
+                          {locale === 'th' ? 'ไม่พบสินค้า' : 'No products found'}
+                        </div>
+                      ) : (
+                        filteredProducts.map((p) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedProduct(p.id);
+                              setPickerOpen(false);
+                              setProductSearch('');
+                            }}
+                            className={`w-full flex items-center justify-between gap-2 px-3 py-2.5 text-left text-sm hover:bg-surface-container-high transition-colors ${
+                              p.id === selectedProduct ? 'bg-primary/10' : ''
+                            }`}
+                          >
+                            <span className="min-w-0">
+                              <span className="block font-medium text-on-surface truncate">
+                                {locale === 'th' ? p.nameTh : p.nameEn}
+                              </span>
+                              <span className="block text-xs text-on-surface-variant">{p.sku}</span>
+                            </span>
+                            <span className="shrink-0 text-xs text-on-surface-variant whitespace-nowrap">
+                              {locale === 'th' ? 'คงเหลือ' : 'Stock'} {p.stock}
+                            </span>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
             <div>
               <label className="block text-sm font-medium text-on-surface mb-1">{t('adjustment_type')}</label>
