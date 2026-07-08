@@ -1,12 +1,18 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { signOut } from 'firebase/auth';
 import { auth } from '@/lib/firebase';
 import { useOrders } from '@/lib/useFirestore';
-import { updateOrderStatus } from '@/lib/firestore';
+import { updateOrderStatus, type Order } from '@/lib/firestore';
 import { useStaff, useActor } from '@/lib/staff-context';
 import { useLanguage } from '@/lib/language-context';
+
+// How long to wait for the server to confirm the write before we stop the
+// spinner and show the "waiting for network" state. Field devices on a weak
+// signal can take a while; 8s is long enough to catch a normal commit but short
+// enough that the button never appears frozen.
+const SYNC_TIMEOUT_MS = 8000;
 
 function formatCurrency(n: number) {
   return n.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -30,13 +36,52 @@ export default function DeliveryPage() {
   const { orders, loading } = useOrders();
 
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Orders the driver has marked delivered whose write has NOT yet been
+  // acknowledged by the server. We keep them on screen (instead of letting the
+  // local optimistic write flip them out of the list) so the driver can never
+  // mistake an unsynced tap for a completed one.
+  const [syncing, setSyncing] = useState<Map<string, Order>>(new Map());
+  const [isOnline, setIsOnline] = useState(true);
+  // Which order's item list is expanded. Drivers open this to check which
+  // branch leftover goods on the truck belong to.
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const pending = useMemo(
+  useEffect(() => {
+    const update = () => setIsOnline(navigator.onLine);
+    update();
+    window.addEventListener('online', update);
+    window.addEventListener('offline', update);
+    return () => {
+      window.removeEventListener('online', update);
+      window.removeEventListener('offline', update);
+    };
+  }, []);
+
+  const serverPending = useMemo(
     () => orders.filter((o) => o.status === 'dispatched'),
     [orders],
   );
 
-  async function handleMarkDelivered(orderDocId: string) {
+  // Cards to render = orders still awaiting delivery on the server, PLUS orders
+  // the driver just tapped that haven't synced yet (which the local cache has
+  // already flipped out of `dispatched`). Syncing state wins so a just-tapped
+  // card shows its "waiting" badge rather than a fresh action button.
+  const cards = useMemo(() => {
+    const map = new Map<string, { order: Order; syncing: boolean }>();
+    for (const o of serverPending) map.set(o.id, { order: o, syncing: false });
+    for (const [id, o] of syncing) map.set(id, { order: o, syncing: true });
+    return Array.from(map.values());
+  }, [serverPending, syncing]);
+
+  const clearSyncing = (id: string) =>
+    setSyncing((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Map(prev);
+      next.delete(id);
+      return next;
+    });
+
+  async function handleMarkDelivered(order: Order) {
     if (!actor) {
       alert(locale === 'th' ? 'ยังไม่มีโปรไฟล์พนักงาน' : 'Staff profile missing');
       return;
@@ -50,16 +95,39 @@ export default function DeliveryPage() {
     ) {
       return;
     }
-    setBusyId(orderDocId);
+
+    setBusyId(order.id);
+    // Park it in the syncing bucket immediately so the card stays visible even
+    // after the optimistic local write removes it from `serverPending`.
+    setSyncing((prev) => new Map(prev).set(order.id, order));
+
+    // Pass the order we already hold so updateOrderStatus skips its server read
+    // (which would hang on a weak signal). When online, this promise resolves
+    // only after the server commits the write; when offline it stays pending.
+    const write = updateOrderStatus(order.id, 'delivered', actor, order);
+
+    // Once the server actually accepts the write, drop the "waiting" badge — even
+    // if that happens long after the timeout below (i.e. signal came back).
+    write
+      .then(() => clearSyncing(order.id))
+      .catch((err) => {
+        console.error('Mark delivered failed:', err);
+        clearSyncing(order.id);
+        alert(
+          locale === 'th'
+            ? 'บันทึกไม่ได้ ลองอีกครั้ง'
+            : 'Failed to save, please retry',
+        );
+      });
+
+    // Don't let the button spin forever on a bad signal. If the server hasn't
+    // confirmed within the timeout, stop the spinner and leave the card in its
+    // "waiting for network" state so the driver knows it isn't done yet.
     try {
-      await updateOrderStatus(orderDocId, 'delivered', actor);
-    } catch (err) {
-      console.error('Mark delivered failed:', err);
-      alert(
-        locale === 'th'
-          ? 'บันทึกไม่ได้ ลองอีกครั้ง'
-          : 'Failed to save, please retry',
-      );
+      await Promise.race([
+        write.then(() => 'ok').catch(() => 'error'),
+        new Promise((res) => setTimeout(() => res('timeout'), SYNC_TIMEOUT_MS)),
+      ]);
     } finally {
       setBusyId(null);
     }
@@ -123,12 +191,23 @@ export default function DeliveryPage() {
 
       {/* Body */}
       <main className="max-w-2xl mx-auto px-4 py-5 space-y-4">
+        {!isOnline && (
+          <div className="flex items-center gap-2 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2.5 text-sm">
+            <span className="material-symbols-outlined text-[18px]">wifi_off</span>
+            <span className="font-medium">
+              {locale === 'th'
+                ? 'ออฟไลน์ — การกดจะถูกส่งขึ้นระบบอัตโนมัติเมื่อมีเน็ต'
+                : 'Offline — taps will sync automatically when back online'}
+            </span>
+          </div>
+        )}
+
         <div className="flex items-baseline justify-between">
           <h1 className="font-headline font-bold text-xl text-on-surface">
             {locale === 'th' ? 'ออเดอร์รอส่ง' : 'Pending deliveries'}
           </h1>
           <span className="text-sm font-semibold text-primary">
-            {pending.length}{' '}
+            {cards.length}{' '}
             <span className="text-xs font-normal text-on-surface-variant">
               {locale === 'th' ? 'ออเดอร์' : 'orders'}
             </span>
@@ -148,7 +227,7 @@ export default function DeliveryPage() {
               </div>
             ))}
           </div>
-        ) : pending.length === 0 ? (
+        ) : cards.length === 0 ? (
           <div className="rounded-2xl border-2 border-dashed border-outline-variant/40 py-16 text-center">
             <span className="material-symbols-outlined text-on-surface-variant text-[48px]">
               local_shipping
@@ -166,7 +245,7 @@ export default function DeliveryPage() {
           </div>
         ) : (
           <div className="space-y-3">
-            {pending.map((order) => {
+            {cards.map(({ order, syncing: isSyncing }) => {
               const totalItems = order.items.reduce(
                 (sum, i) => sum + i.quantity,
                 0,
@@ -175,7 +254,11 @@ export default function DeliveryPage() {
               return (
                 <div
                   key={order.id}
-                  className="bg-surface-container-lowest rounded-2xl border border-outline-variant/30 p-4 shadow-sm"
+                  className={`bg-surface-container-lowest rounded-2xl border p-4 shadow-sm ${
+                    isSyncing
+                      ? 'border-amber-300 ring-1 ring-amber-200'
+                      : 'border-outline-variant/30'
+                  }`}
                 >
                   {/* Branch + order # */}
                   <div className="flex items-start justify-between gap-3 mb-2">
@@ -233,28 +316,93 @@ export default function DeliveryPage() {
                     </div>
                   )}
 
-                  {/* Action: ส่งเสร็จ */}
+                  {/* View items — so the driver can check which branch the
+                      leftover goods on the truck belong to */}
                   <button
-                    onClick={() => handleMarkDelivered(order.id)}
-                    disabled={isBusy}
-                    className="w-full min-h-[52px] flex items-center justify-center gap-2 rounded-xl bg-primary text-on-primary font-bold text-base hover:opacity-90 active:scale-[0.98] disabled:opacity-50 transition-all"
+                    onClick={() =>
+                      setExpandedId((prev) =>
+                        prev === order.id ? null : order.id,
+                      )
+                    }
+                    className="w-full flex items-center justify-center gap-1.5 mb-3 py-2 rounded-lg border border-outline-variant/40 text-sm font-semibold text-on-surface-variant hover:bg-surface-container active:scale-[0.99] transition-all"
                   >
-                    {isBusy ? (
-                      <>
-                        <span className="material-symbols-outlined text-[20px] animate-spin">
-                          progress_activity
-                        </span>
-                        {locale === 'th' ? 'กำลังบันทึก…' : 'Saving…'}
-                      </>
-                    ) : (
-                      <>
-                        <span className="material-symbols-outlined text-[22px]">
-                          check_circle
-                        </span>
-                        {locale === 'th' ? 'ส่งเสร็จ' : 'Mark Delivered'}
-                      </>
-                    )}
+                    <span className="material-symbols-outlined text-[18px]">
+                      {expandedId === order.id ? 'expand_less' : 'list_alt'}
+                    </span>
+                    {expandedId === order.id
+                      ? locale === 'th'
+                        ? 'ซ่อนรายการ'
+                        : 'Hide items'
+                      : locale === 'th'
+                        ? 'ดูรายการสินค้า'
+                        : 'View items'}
                   </button>
+
+                  {expandedId === order.id && (
+                    <div className="mb-3 rounded-xl border border-outline-variant/30 bg-surface-container-lowest divide-y divide-outline-variant/20">
+                      {order.items.map((item, idx) => (
+                        <div
+                          key={`${item.productId}-${idx}`}
+                          className="flex items-center justify-between gap-3 px-3 py-2.5"
+                        >
+                          <span className="text-sm text-on-surface min-w-0 break-words">
+                            {locale === 'th' ? item.nameTh : item.nameEn}
+                          </span>
+                          <span className="text-sm font-bold text-on-surface shrink-0 tabular-nums">
+                            {item.quantity}
+                            <span className="text-xs font-normal text-on-surface-variant ml-1">
+                              {item.unit ||
+                                (locale === 'th' ? 'ชิ้น' : 'pcs')}
+                            </span>
+                          </span>
+                        </div>
+                      ))}
+                      {order.notes && (
+                        <div className="flex items-start gap-1.5 px-3 py-2.5 text-xs text-amber-800 bg-amber-50">
+                          <span className="material-symbols-outlined text-[15px] mt-px">
+                            sticky_note_2
+                          </span>
+                          <span className="break-words">{order.notes}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Action: ส่งเสร็จ — or the "waiting to sync" state once tapped */}
+                  {isSyncing ? (
+                    <div className="w-full min-h-[52px] flex items-center justify-center gap-2 rounded-xl bg-amber-50 border border-amber-300 text-amber-800 font-semibold text-sm px-3">
+                      <span className="material-symbols-outlined text-[20px] animate-spin">
+                        progress_activity
+                      </span>
+                      <span className="text-center leading-tight">
+                        {locale === 'th'
+                          ? 'รอส่งขึ้นระบบ — ยังไม่เสร็จ จนกว่าจะมีเน็ต'
+                          : 'Waiting to sync — not done until it reaches the server'}
+                      </span>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => handleMarkDelivered(order)}
+                      disabled={isBusy}
+                      className="w-full min-h-[52px] flex items-center justify-center gap-2 rounded-xl bg-primary text-on-primary font-bold text-base hover:opacity-90 active:scale-[0.98] disabled:opacity-50 transition-all"
+                    >
+                      {isBusy ? (
+                        <>
+                          <span className="material-symbols-outlined text-[20px] animate-spin">
+                            progress_activity
+                          </span>
+                          {locale === 'th' ? 'กำลังบันทึก…' : 'Saving…'}
+                        </>
+                      ) : (
+                        <>
+                          <span className="material-symbols-outlined text-[22px]">
+                            check_circle
+                          </span>
+                          {locale === 'th' ? 'ส่งเสร็จ' : 'Mark Delivered'}
+                        </>
+                      )}
+                    </button>
+                  )}
                 </div>
               );
             })}

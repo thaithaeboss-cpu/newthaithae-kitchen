@@ -7,6 +7,7 @@ import {
   deleteDoc,
   getDocs,
   getDoc,
+  getDocFromCache,
   setDoc,
   query,
   where,
@@ -704,11 +705,31 @@ export async function updateOrderStatus(
   id: string,
   status: OrderStatus,
   actor?: { uid: string; name: string },
+  // Callers that already hold the order (e.g. the delivery / fulfillment lists,
+  // which render it from a live snapshot) should pass it here. That lets us skip
+  // the server read below — a round-trip that HANGS on a weak signal, leaving the
+  // button stuck on "saving" out in the field. When omitted we read from the
+  // local cache first and only fall back to the server, so we never block on the
+  // network just to stamp a timeline entry.
+  currentOrder?: Partial<Order> | null,
 ): Promise<void> {
   const docRef = doc(db, 'orders', id);
-  // Read current status so the timeline entry has the `fromStatus`
-  const snap = await getDoc(docRef);
-  const current = snap.exists() ? (snap.data() as Order) : null;
+  // Resolve the current state for the timeline `fromStatus` + one-time promoted
+  // fields, without a mandatory server round-trip.
+  let current: Partial<Order> | null = currentOrder ?? null;
+  if (!current) {
+    try {
+      const cached = await getDocFromCache(docRef);
+      current = cached.exists() ? (cached.data() as Order) : null;
+    } catch {
+      try {
+        const snap = await getDoc(docRef);
+        current = snap.exists() ? (snap.data() as Order) : null;
+      } catch {
+        current = null;
+      }
+    }
+  }
   const fromStatus = current?.status;
 
   const now = new Date();
