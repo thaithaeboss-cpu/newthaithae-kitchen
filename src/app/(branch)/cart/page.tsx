@@ -1,12 +1,14 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { useCart } from '@/lib/cart-context';
 import { useLanguage } from '@/lib/language-context';
 import { useBranches } from '@/lib/useFirestore';
 import { useBranchContext } from '@/lib/branch-context';
-import { addOrder, updateStock } from '@/lib/firestore';
+import { newOrderId, writeOrder, updateStock, type Order } from '@/lib/firestore';
+
+type OrderPayload = Omit<Order, 'id' | 'orderId' | 'createdAt' | 'updatedAt'>;
 
 
 // ======================== CART PAGE ========================
@@ -39,51 +41,116 @@ export default function CartPage() {
 
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [orderPlaced, setOrderPlaced] = useState(false);
+  // 'syncing' while the write hasn't been acknowledged by the server (offline /
+  // weak signal), 'synced' once it lands, 'error' if it was rejected outright.
+  const [orderSyncState, setOrderSyncState] = useState<'syncing' | 'synced' | 'error'>('syncing');
+  // Guards against a second submission firing before the screen swaps out — the
+  // core cause of duplicate orders when staff re-tapped on a bad signal.
+  const submittingRef = useRef(false);
+  // The single order write for this checkout. Kept so a retry re-uses the SAME
+  // document id (idempotent) instead of creating another order.
+  const pendingWriteRef = useRef<{ id: string; data: OrderPayload; branchName: string } | null>(null);
 
-  async function handleSubmitOrder() {
-    setShowConfirmModal(false);
+  // Perform (or retry) the reserved order write. Awaiting writeOrder resolves
+  // only after the server acknowledges the write, so `synced` is truthful; while
+  // offline it stays `syncing` and the queued write lands automatically later.
+  async function runOrderWrite() {
+    const pending = pendingWriteRef.current;
+    if (!pending) return;
+    setOrderSyncState('syncing');
     try {
-      const branch = branches.find((b) => b.id === selectedBranch);
-      const branchName = (locale === 'th' ? branch?.nameTh : branch?.nameEn) ?? '';
-      const orderDocId = await addOrder({
-        branchId: selectedBranch,
-        branchName,
-        status: 'new',
-        items: cartItems.map((item) => {
-          const unitPrice = unitPriceFor(item.product);
-          return {
-            productId: item.productId,
-            nameTh: item.product.nameTh,
-            nameEn: item.product.nameEn,
-            quantity: item.quantity,
-            unit: item.product.unit,
-            unitPrice,
-            total: unitPrice * item.quantity,
-          };
-        }),
-        subtotal: cartSubtotal,
-        vat: 0,
-        deliveryFee: 0,
-        total: cartTotal,
-      });
-
-      // Deduct stock for each ordered item (best-effort, don't block order confirmation)
+      await writeOrder(pending.id, pending.data);
+      setOrderSyncState('synced');
+      // Best-effort stock deduction once the order is safely stored.
       await Promise.all(
-        cartItems.map((item) =>
-          updateStock(item.productId, -item.quantity, `Order #${orderDocId.slice(0, 6)} · ${branchName}`).catch((err) => {
-            console.error(`Failed to deduct stock for ${item.product.nameEn}:`, err);
-          })
-        )
+        pending.data.items.map((it) =>
+          updateStock(
+            it.productId,
+            -it.quantity,
+            `Order ${pending.id.slice(0, 6)} · ${pending.branchName}`,
+          ).catch((err) =>
+            console.error(`Failed to deduct stock for ${it.productId}:`, err),
+          ),
+        ),
       );
     } catch (err) {
       console.error('Failed to submit order:', err);
+      setOrderSyncState('error');
     }
-    setOrderPlaced(true);
-    clearCart();
   }
 
-  // ---- Order placed success ----
+  function handleSubmitOrder() {
+    // Ignore repeat taps for this same cart — the write is fired exactly once.
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setShowConfirmModal(false);
+
+    const branch = branches.find((b) => b.id === selectedBranch);
+    const branchName = (locale === 'th' ? branch?.nameTh : branch?.nameEn) ?? '';
+    const data: OrderPayload = {
+      branchId: selectedBranch,
+      branchName,
+      status: 'new',
+      items: cartItems.map((item) => {
+        const unitPrice = unitPriceFor(item.product);
+        return {
+          productId: item.productId,
+          nameTh: item.product.nameTh,
+          nameEn: item.product.nameEn,
+          quantity: item.quantity,
+          unit: item.product.unit,
+          unitPrice,
+          total: unitPrice * item.quantity,
+        };
+      }),
+      subtotal: cartSubtotal,
+      vat: 0,
+      deliveryFee: 0,
+      total: cartTotal,
+    };
+
+    // Reserve the document id on the client so this checkout maps to exactly one
+    // order, even if the write is slow, retried, or fires more than once.
+    pendingWriteRef.current = { id: newOrderId(), data, branchName };
+
+    // Optimistically move to the success screen and clear the cart right away.
+    // The write runs in the background; we no longer block on the server ack,
+    // which is what left staff staring at an unchanged screen and re-submitting.
+    setOrderSyncState('syncing');
+    setOrderPlaced(true);
+    clearCart();
+
+    void runOrderWrite();
+  }
+
+  // ---- Order placed ----
   if (orderPlaced) {
+    // Write was rejected outright — offer a retry that re-uses the same order id.
+    if (orderSyncState === 'error') {
+      return (
+        <div className="flex flex-col items-center justify-center py-20 text-center">
+          <div className="w-20 h-20 rounded-full bg-red-100 flex items-center justify-center mb-4">
+            <span className="material-symbols-outlined text-red-600 text-4xl">error</span>
+          </div>
+          <h2 className="font-headline font-bold text-xl text-on-surface mb-2">
+            {locale === 'th' ? 'ส่งออเดอร์ไม่สำเร็จ' : 'Couldn’t send order'}
+          </h2>
+          <p className="text-on-surface-variant text-sm mb-6 max-w-xs">
+            {locale === 'th'
+              ? 'ออเดอร์ยังไม่ถูกส่ง กดลองใหม่ได้เลย ระบบจะไม่สร้างออเดอร์ซ้ำ'
+              : 'The order wasn’t sent. Retry safely — it won’t create a duplicate.'}
+          </p>
+          <button
+            onClick={() => void runOrderWrite()}
+            className="px-6 py-2.5 rounded-xl bg-primary text-on-primary text-sm font-semibold hover:opacity-90 transition-opacity inline-flex items-center gap-2"
+          >
+            <span className="material-symbols-outlined text-base">refresh</span>
+            {locale === 'th' ? 'ลองส่งใหม่' : 'Retry'}
+          </button>
+        </div>
+      );
+    }
+
     return (
       <div className="flex flex-col items-center justify-center py-20 text-center">
         <div className="w-20 h-20 rounded-full bg-green-100 flex items-center justify-center mb-4">
@@ -92,9 +159,28 @@ export default function CartPage() {
         <h2 className="font-headline font-bold text-xl text-on-surface mb-2">
           {t('order_sent_success')}
         </h2>
-        <p className="text-on-surface-variant text-sm mb-6 max-w-xs">
+        <p className="text-on-surface-variant text-sm mb-4 max-w-xs">
           {t('order_sent_message')}
         </p>
+
+        {/* Honest sync status: the order is safely captured on the device even
+            before it reaches the server, so staff never need to re-submit. */}
+        {orderSyncState === 'syncing' ? (
+          <div className="flex items-center gap-2 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 text-xs font-medium mb-6 max-w-xs">
+            <span className="material-symbols-outlined text-[16px] animate-spin">progress_activity</span>
+            <span className="text-left leading-tight">
+              {locale === 'th'
+                ? 'บันทึกแล้ว กำลังส่งขึ้นระบบ — ไม่ต้องกดซ้ำ จะส่งอัตโนมัติเมื่อมีเน็ต'
+                : 'Saved — syncing to the server. No need to re-send; it’ll upload automatically.'}
+            </span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-1.5 text-emerald-700 text-xs font-medium mb-6">
+            <span className="material-symbols-outlined text-[16px]">cloud_done</span>
+            {locale === 'th' ? 'ส่งขึ้นระบบแล้ว' : 'Synced to the server'}
+          </div>
+        )}
+
         <Link
           href="/catalog"
           className="px-6 py-2.5 rounded-xl bg-primary text-on-primary text-sm font-semibold hover:opacity-90 transition-opacity"

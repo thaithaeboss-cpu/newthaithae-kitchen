@@ -625,7 +625,15 @@ export async function toggleBranchFavorite(branchId: string, productId: string, 
 export async function generateOrderId(): Promise<string> {
   try {
     const q = query(collection(db, 'orders'), orderBy('createdAt', 'desc'), limit(1));
-    const snapshot = await getDocs(q);
+    // Race the read against a timeout: on a weak-but-online signal getDocs can
+    // hang indefinitely, which would stall the order write. If it doesn't answer
+    // quickly we fall back to a timestamp-based number rather than block.
+    const snapshot = await Promise.race([
+      getDocs(q),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('generateOrderId timeout')), 4000),
+      ),
+    ]);
     if (snapshot.empty) return 'CK-00001';
     const lastOrder = snapshot.docs[0].data();
     const lastId = lastOrder.orderId as string;
@@ -636,6 +644,29 @@ export async function generateOrderId(): Promise<string> {
     console.error('Error generating order ID:', error);
     return `CK-${String(Date.now()).slice(-5)}`;
   }
+}
+
+// Reserve a Firestore document id for an order up front, on the client. Pairing
+// this with writeOrder() makes order submission idempotent: a slow or retried
+// write always targets the SAME document, so a branch tapping "confirm" several
+// times on a bad signal can only ever create one order.
+export function newOrderId(): string {
+  return doc(collection(db, 'orders')).id;
+}
+
+// Write (or overwrite) an order at a known id. Used by the branch cart so the
+// write is idempotent — see newOrderId(). Retrying with the same id de-dupes.
+export async function writeOrder(
+  id: string,
+  data: Omit<Order, 'id' | 'orderId' | 'createdAt' | 'updatedAt'>,
+): Promise<void> {
+  const orderId = await generateOrderId();
+  await setDoc(doc(db, 'orders', id), {
+    ...data,
+    orderId,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
 }
 
 export async function getOrders(filters?: OrderFilters): Promise<Order[]> {
