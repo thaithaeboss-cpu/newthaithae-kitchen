@@ -899,6 +899,63 @@ export function useDashboardStats(branchId?: string) {
 }
 
 // ============================================================
+// Per-branch monthly stats (branch management cards)
+// ============================================================
+
+export interface BranchMonthlyStat {
+  orders: number; // orders created this month, excluding cancelled
+  spent: number;  // ฿ of orders delivered this month
+}
+
+// One month-scoped query for all branches, grouped by branchId client-side —
+// so the branch management page shows real numbers without a per-branch read.
+export function useBranchMonthlyStats() {
+  const [stats, setStats] = useState<Record<string, BranchMonthlyStat>>({});
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!isFirebaseConfigured()) {
+      setStats({});
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const q = query(
+      collection(db, 'orders'),
+      where('createdAt', '>=', Timestamp.fromDate(startOfMonth)),
+    );
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const map: Record<string, BranchMonthlyStat> = {};
+        snapshot.docs.forEach((d) => {
+          const o = d.data();
+          const branchId = o.branchId as string | undefined;
+          if (!branchId) return;
+          if (!map[branchId]) map[branchId] = { orders: 0, spent: 0 };
+          if (o.status !== 'cancelled') map[branchId].orders += 1;
+          if (o.status === 'delivered') map[branchId].spent += (o.total as number) || 0;
+        });
+        setStats(map);
+        setLoading(false);
+      },
+      (err) => {
+        console.error('useBranchMonthlyStats error:', err);
+        setLoading(false);
+      },
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  return { stats, loading };
+}
+
+// ============================================================
 // Order Window
 // ============================================================
 

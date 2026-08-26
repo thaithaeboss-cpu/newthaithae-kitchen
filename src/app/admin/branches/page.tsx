@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useLanguage } from '@/lib/language-context';
-import { useBranches } from '@/lib/useFirestore';
+import { useBranches, useBranchMonthlyStats } from '@/lib/useFirestore';
 import { addBranch, updateBranch, deleteBranch, type CustomerType } from '@/lib/firestore';
 
 type BranchFormData = {
@@ -38,6 +38,7 @@ const emptyBranch: BranchFormData = {
 export default function BranchesPage() {
   const { t, locale } = useLanguage();
   const { branches, loading, refresh } = useBranches();
+  const { stats: monthlyStats } = useBranchMonthlyStats();
   const [showModal, setShowModal] = useState(false);
   const [editBranch, setEditBranch] = useState<{ id: string } & BranchFormData | null>(null);
   const [formData, setFormData] = useState<BranchFormData>(emptyBranch);
@@ -199,11 +200,18 @@ export default function BranchesPage() {
 
               <div className="grid grid-cols-2 gap-3 mt-4 pt-4 border-t border-outline-variant/20">
                 <div className="bg-surface-container rounded-lg p-3 text-center">
-                  <p className="text-lg font-bold text-on-surface">0</p>
+                  <p className="text-lg font-bold text-on-surface">
+                    {monthlyStats[b.id]?.orders ?? 0}
+                  </p>
                   <p className="text-xs text-on-surface-variant">{t('orders_this_month')}</p>
                 </div>
                 <div className="bg-surface-container rounded-lg p-3 text-center">
-                  <p className="text-lg font-bold text-on-surface">฿0</p>
+                  <p className="text-lg font-bold text-on-surface">
+                    ฿{(monthlyStats[b.id]?.spent ?? 0).toLocaleString('th-TH', {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}
+                  </p>
                   <p className="text-xs text-on-surface-variant">{t('total_spent_month')}</p>
                 </div>
               </div>
