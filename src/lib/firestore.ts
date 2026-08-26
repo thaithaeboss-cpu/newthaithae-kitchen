@@ -17,6 +17,7 @@ import {
   serverTimestamp,
   increment,
   runTransaction,
+  writeBatch,
   arrayUnion,
   arrayRemove,
   deleteField,
@@ -489,6 +490,37 @@ export async function addBranch(data: Omit<Branch, 'id' | 'createdAt' | 'updated
     updatedAt: serverTimestamp(),
   });
   return docRef.id;
+}
+
+// Grant a branch visibility to every product that currently uses an explicit
+// allow-list. Used when a new INTERNAL branch is created so the admin doesn't
+// have to tick it into each product by hand.
+//
+// IMPORTANT: products whose `visibleToBranches` is empty/absent already show to
+// ALL branches, so they are skipped — adding the id there would flip them from
+// "all branches" to "only this branch" and hide them from everyone else.
+export async function addBranchToAllRestrictedProducts(branchId: string): Promise<number> {
+  const snap = await getDocs(collection(db, 'products'));
+  const targets = snap.docs.filter((d) => {
+    const list = (d.data().visibleToBranches ?? []) as string[];
+    return list.length > 0 && !list.includes(branchId);
+  });
+
+  // Firestore caps a batch at 500 writes; chunk to stay well under.
+  let updated = 0;
+  for (let i = 0; i < targets.length; i += 450) {
+    const chunk = targets.slice(i, i + 450);
+    const batch = writeBatch(db);
+    for (const d of chunk) {
+      batch.update(d.ref, {
+        visibleToBranches: arrayUnion(branchId),
+        updatedAt: serverTimestamp(),
+      });
+    }
+    await batch.commit();
+    updated += chunk.length;
+  }
+  return updated;
 }
 
 export async function updateBranch(id: string, data: Partial<Omit<Branch, 'id' | 'createdAt'>>): Promise<void> {

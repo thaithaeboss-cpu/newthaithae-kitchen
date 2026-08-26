@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useLanguage } from '@/lib/language-context';
 import { useBranches, useBranchMonthlyStats } from '@/lib/useFirestore';
-import { addBranch, updateBranch, deleteBranch, type CustomerType } from '@/lib/firestore';
+import { addBranch, updateBranch, deleteBranch, addBranchToAllRestrictedProducts, type CustomerType } from '@/lib/firestore';
 
 type BranchFormData = {
   code: string;
@@ -74,11 +74,39 @@ export default function BranchesPage() {
         ...formData,
         ownerEmail: formData.ownerEmail?.trim().toLowerCase() || undefined,
       };
+      let branchId = editBranch?.id;
       if (editBranch) {
         await updateBranch(editBranch.id, payload);
       } else {
-        await addBranch(payload);
+        branchId = await addBranch(payload);
       }
+
+      // Internal branches should see the full catalogue. Auto-add the branch to
+      // every product that uses an explicit branch allow-list, so there's no
+      // need to tick it into each product by hand. Runs on both create and save
+      // (so an already-added branch can be backfilled by editing it), and is
+      // idempotent — it only adds where missing. External branches are left
+      // untouched; the admin curates their few items.
+      if (payload.customerType === 'internal' && branchId) {
+        try {
+          const count = await addBranchToAllRestrictedProducts(branchId);
+          if (count > 0) {
+            alert(
+              locale === 'th'
+                ? `เพิ่มสาขานี้เข้าสินค้า ${count} รายการที่จำกัดสาขาไว้แล้ว`
+                : `Added this branch to ${count} branch-restricted product(s)`,
+            );
+          }
+        } catch (err) {
+          console.error('Failed to grant product visibility to branch:', err);
+          alert(
+            locale === 'th'
+              ? 'บันทึกสาขาแล้ว แต่ตั้งการมองเห็นสินค้าอัตโนมัติไม่สำเร็จ — เข้าไปติกในหน้าสินค้าได้'
+              : 'Branch saved, but auto product-visibility failed — you can tick it in Products.',
+          );
+        }
+      }
+
       await refresh();
       setShowModal(false);
     } catch (err) {
