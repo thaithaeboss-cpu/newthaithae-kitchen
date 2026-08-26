@@ -1529,14 +1529,31 @@ export async function voidInvoice(id: string): Promise<void> {
 export async function getUninvoicedOrdersByBranch(branchId: string, branchNames?: string[]): Promise<Order[]> {
   if (!isFirestoreConfigured()) return [];
   try {
-    // Load ALL uninvoiced orders, filter client-side by branchId OR branchName
-    // (more robust against branchId mismatches from legacy / different seed data)
-    const snapshot = await getDocs(collection(db, 'orders'));
-    const all = snapshot.docs.map((d) => convertTimestamps<Order>(d.data(), d.id));
-    const nameSet = new Set((branchNames ?? []).filter(Boolean));
-    return all
+    // Scope the read to THIS branch on the server instead of downloading every
+    // order in the system (which made the invoice modal re-download the whole
+    // orders collection once per branch). We still match by branchName as well,
+    // to stay robust against legacy/seed data whose branchId doesn't line up —
+    // both queries run in parallel and are merged. These are single-field
+    // equality / `in` filters, so Firestore auto-indexes them; no composite
+    // index and no server-side orderBy (we sort client-side on the small result).
+    const ordersCol = collection(db, 'orders');
+    const names = Array.from(new Set((branchNames ?? []).filter(Boolean))).slice(0, 10);
+
+    const queries = [getDocs(query(ordersCol, where('branchId', '==', branchId)))];
+    if (names.length > 0) {
+      queries.push(getDocs(query(ordersCol, where('branchName', 'in', names))));
+    }
+
+    const snaps = await Promise.all(queries);
+    const byId = new Map<string, Order>();
+    for (const snap of snaps) {
+      for (const d of snap.docs) {
+        if (!byId.has(d.id)) byId.set(d.id, convertTimestamps<Order>(d.data(), d.id));
+      }
+    }
+
+    return Array.from(byId.values())
       .filter((o) => o.status !== 'cancelled' && !o.invoiceId)
-      .filter((o) => o.branchId === branchId || (o.branchName && nameSet.has(o.branchName)))
       .sort((a, b) => {
         const aDate = typeof a.createdAt === 'string' ? a.createdAt : (a.createdAt as unknown as Date).toISOString();
         const bDate = typeof b.createdAt === 'string' ? b.createdAt : (b.createdAt as unknown as Date).toISOString();

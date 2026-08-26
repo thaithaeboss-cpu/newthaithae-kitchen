@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useLanguage } from '@/lib/language-context';
 import { useBranches } from '@/lib/useFirestore';
 import { useInvoices, usePaymentsByInvoice } from '@/lib/useFirestore';
@@ -238,45 +238,76 @@ function CreateInvoiceModal({
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [branchCounts, setBranchCounts] = useState<Record<string, number>>({});
+  // Uninvoiced orders per branch, fetched once when the modal opens and reused
+  // when a branch is selected — so step 2 doesn't refetch what the preload
+  // already loaded.
+  const ordersByBranchRef = useRef<Record<string, Order[]>>({});
 
-  // Reset when modal opens; preload uninvoiced counts per branch
+  // Reset when modal opens; preload uninvoiced orders per branch
   useEffect(() => {
-    if (open) {
-      setStep(1);
-      setSelectedBranchId('');
-      setUninvoicedOrders([]);
-      setSelectedOrderIds(new Set());
-      const d = new Date();
-      d.setDate(d.getDate() + 30);
-      setDueDate(d.toISOString().split('T')[0]);
-      setNotes('');
-      setBranchCounts({});
-      // Preload counts
-      (async () => {
-        const counts: Record<string, number> = {};
-        for (const b of branches) {
+    if (!open) return;
+    setStep(1);
+    setSelectedBranchId('');
+    setUninvoicedOrders([]);
+    setSelectedOrderIds(new Set());
+    const d = new Date();
+    d.setDate(d.getDate() + 30);
+    setDueDate(d.toISOString().split('T')[0]);
+    setNotes('');
+    setBranchCounts({});
+    ordersByBranchRef.current = {};
+
+    let cancelled = false;
+    (async () => {
+      // Fetch every branch's uninvoiced orders in PARALLEL. This used to be a
+      // sequential await loop where each iteration re-downloaded the entire
+      // orders collection (branches × all-orders) — the cause of the modal
+      // sometimes taking very long to open. Each call is now branch-scoped and
+      // they run concurrently, and we cache the lists for instant branch select.
+      const results = await Promise.all(
+        branches.map(async (b) => {
           const names = [b.nameTh, b.nameEn].filter(Boolean) as string[];
           try {
-            const list = await getUninvoicedOrdersByBranch(b.id, names);
-            counts[b.id] = list.length;
+            return [b.id, await getUninvoicedOrdersByBranch(b.id, names)] as const;
           } catch {
-            counts[b.id] = 0;
+            return [b.id, [] as Order[]] as const;
           }
-        }
-        setBranchCounts(counts);
-      })();
-    }
+        }),
+      );
+      if (cancelled) return;
+      const counts: Record<string, number> = {};
+      const cache: Record<string, Order[]> = {};
+      for (const [id, list] of results) {
+        counts[id] = list.length;
+        cache[id] = list;
+      }
+      ordersByBranchRef.current = cache;
+      setBranchCounts(counts);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [open, branches]);
 
-  // Fetch uninvoiced orders when branch is selected
+  // Select a branch — reuse the preloaded list; only fetch if it isn't cached.
   async function handleBranchSelect(branchId: string) {
     setSelectedBranchId(branchId);
     setSelectedOrderIds(new Set());
+
+    const cached = ordersByBranchRef.current[branchId];
+    if (cached) {
+      setUninvoicedOrders(cached);
+      setLoadingOrders(false);
+      return;
+    }
+
     setLoadingOrders(true);
     try {
       const branch = branches.find((b) => b.id === branchId);
       const names = branch ? [branch.nameTh, branch.nameEn].filter(Boolean) as string[] : [];
       const orders = await getUninvoicedOrdersByBranch(branchId, names);
+      ordersByBranchRef.current[branchId] = orders;
       setUninvoicedOrders(orders);
     } catch (err) {
       console.error('Failed to fetch uninvoiced orders:', err);
