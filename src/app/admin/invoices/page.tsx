@@ -3,18 +3,23 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useLanguage } from '@/lib/language-context';
 import { useBranches } from '@/lib/useFirestore';
-import { useInvoices, usePaymentsByInvoice } from '@/lib/useFirestore';
+import { useInvoices, usePaymentsByInvoice, useCreditNotes } from '@/lib/useFirestore';
+import { useActor } from '@/lib/staff-context';
 import {
   addInvoice,
   addPaymentRecord,
   deletePaymentRecord,
   voidInvoice,
+  addCreditNote,
+  voidCreditNote,
   loadSettings,
   getUninvoicedOrdersByBranch,
   type Invoice,
   type Order,
   type PaymentMethod,
   type AppSettings,
+  type CreditNote,
+  type CreditNoteLineItem,
 } from '@/lib/firestore';
 
 function formatCurrency(n: number): string {
@@ -634,20 +639,218 @@ function CreateInvoiceModal({
   );
 }
 
+// ======================== CREDIT NOTE MODAL ========================
+
+function CreditNoteModal({
+  invoice,
+  actor,
+  onClose,
+  onCreated,
+  t,
+  locale,
+}: {
+  invoice: Invoice;
+  actor: { uid: string; name: string } | null;
+  onClose: () => void;
+  onCreated: () => void;
+  t: (k: any) => string;
+  locale: string;
+}) {
+  // Damaged qty per line, keyed by a stable index (an invoice can list the same
+  // product from two source orders).
+  const [qtys, setQtys] = useState<Record<number, number>>({});
+  const [reason, setReason] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const lines = invoice.items.map((item, i) => {
+    const qty = qtys[i] ?? 0;
+    return { item, i, qty, lineTotal: qty * item.unitPrice };
+  });
+  const amount = lines.reduce((s, l) => s + l.lineTotal, 0);
+  const outstanding = invoice.amountDue;
+  const appliedToInvoice = Math.min(amount, outstanding);
+  const carriedForward = amount - appliedToInvoice;
+
+  function setQty(i: number, max: number, raw: string) {
+    const n = Math.max(0, Math.min(max, Math.floor(Number(raw) || 0)));
+    setQtys((prev) => ({ ...prev, [i]: n }));
+  }
+
+  async function handleSubmit() {
+    if (!actor) {
+      setError(locale === 'th' ? 'ยังไม่มีโปรไฟล์พนักงาน' : 'Staff profile missing');
+      return;
+    }
+    if (amount <= 0) {
+      setError(locale === 'th' ? 'เลือกจำนวนสินค้าที่จะคืนเครดิตก่อน' : 'Select a quantity to credit');
+      return;
+    }
+    if (!reason.trim()) {
+      setError(locale === 'th' ? 'กรอกเหตุผล (เช่น สินค้าเสียหาย)' : 'Enter a reason');
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const items: CreditNoteLineItem[] = lines
+        .filter((l) => l.qty > 0)
+        .map((l) => ({
+          productId: l.item.productId,
+          nameTh: l.item.nameTh,
+          nameEn: l.item.nameEn,
+          quantity: l.qty,
+          unitPrice: l.item.unitPrice,
+          total: l.lineTotal,
+          unit: l.item.unit,
+          sourceOrderId: l.item.sourceOrderId,
+          sourceOrderNumber: l.item.sourceOrderNumber,
+        }));
+      await addCreditNote({
+        invoiceId: invoice.id,
+        items,
+        reason: reason.trim(),
+        createdBy: actor.uid,
+        createdByName: actor.name,
+      });
+      onCreated();
+    } catch (err) {
+      console.error('Failed to issue credit note:', err);
+      setError(locale === 'th' ? 'ออกเครดิตไม่สำเร็จ ลองอีกครั้ง' : 'Failed to issue credit, please retry');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 z-[60] flex items-center justify-center p-4">
+      <div className="bg-surface-container-lowest rounded-2xl w-full max-w-lg max-h-[85vh] flex flex-col shadow-xl">
+        <div className="flex items-center justify-between p-5 border-b border-outline-variant">
+          <div>
+            <h2 className="font-headline font-bold text-lg text-on-surface">
+              {locale === 'th' ? 'ออกเครดิตคืน' : 'Issue Credit Note'}
+            </h2>
+            <p className="text-xs text-on-surface-variant">
+              {invoice.invoiceNumber} · {invoice.branchName}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-on-surface-variant hover:text-on-surface">
+            <span className="material-symbols-outlined">close</span>
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          <p className="text-xs text-on-surface-variant">
+            {locale === 'th'
+              ? 'ใส่จำนวนสินค้าที่เสียหาย/ต้องคืนเครดิตในแต่ละรายการ (ไม่คืนสต็อก)'
+              : 'Enter the damaged / credited quantity per line (stock is not restored)'}
+          </p>
+
+          <div className="border border-outline-variant rounded-lg divide-y divide-outline-variant/40">
+            {lines.map((l) => (
+              <div key={l.i} className="flex items-center gap-3 px-3 py-2.5">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-on-surface truncate">
+                    {locale === 'th' ? l.item.nameTh : l.item.nameEn}
+                  </p>
+                  <p className="text-[11px] text-on-surface-variant">
+                    {locale === 'th' ? 'ในบิล' : 'Invoiced'}: {l.item.quantity} {l.item.unit} · ฿{formatCurrency(l.item.unitPrice)}/{l.item.unit || (locale === 'th' ? 'หน่วย' : 'unit')}
+                  </p>
+                </div>
+                <input
+                  type="number"
+                  min={0}
+                  max={l.item.quantity}
+                  value={l.qty || ''}
+                  placeholder="0"
+                  onChange={(e) => setQty(l.i, l.item.quantity, e.target.value)}
+                  className="w-16 px-2 py-1.5 rounded-lg border border-outline-variant/60 bg-surface text-sm text-center focus:outline-none focus:ring-2 focus:ring-primary/30"
+                />
+                <span className="w-20 text-right text-sm font-medium text-on-surface tabular-nums">
+                  ฿{formatCurrency(l.lineTotal)}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-on-surface mb-1">
+              {locale === 'th' ? 'เหตุผล' : 'Reason'}
+            </label>
+            <input
+              type="text"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder={locale === 'th' ? 'เช่น สินค้าเสียหายระหว่างส่ง' : 'e.g. Damaged in transit'}
+              className="w-full px-3 py-2 rounded-lg border border-outline-variant/60 bg-surface text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+            />
+          </div>
+
+          {/* Credit split preview */}
+          <div className="rounded-lg bg-surface-container-low p-3 text-sm space-y-1">
+            <div className="flex justify-between">
+              <span className="text-on-surface-variant">{locale === 'th' ? 'ยอดเครดิตรวม' : 'Total credit'}</span>
+              <span className="font-bold text-on-surface">฿{formatCurrency(amount)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-on-surface-variant">{locale === 'th' ? 'หักยอดค้างในบิลนี้' : 'Reduces this invoice'}</span>
+              <span className="font-semibold text-emerald-700">−฿{formatCurrency(appliedToInvoice)}</span>
+            </div>
+            {carriedForward > 0 && (
+              <div className="flex justify-between">
+                <span className="text-on-surface-variant">{locale === 'th' ? 'เครดิตยกยอดให้สาขา' : 'Carried forward to branch'}</span>
+                <span className="font-semibold text-amber-700">฿{formatCurrency(carriedForward)}</span>
+              </div>
+            )}
+          </div>
+
+          {error && (
+            <div className="rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm px-3 py-2">
+              {error}
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-2 p-5 border-t border-outline-variant">
+          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-outline-variant text-on-surface text-sm font-semibold hover:bg-surface-container-high">
+            {t('cancel')}
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={submitting || amount <= 0}
+            className="flex-1 py-2.5 rounded-xl bg-primary text-on-primary text-sm font-semibold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-1.5"
+          >
+            <span className="material-symbols-outlined text-base">receipt_long</span>
+            {submitting
+              ? t('loading')
+              : locale === 'th' ? 'ออกเครดิต' : 'Issue credit'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ======================== INVOICE DETAIL PANEL ========================
 
 function InvoiceDetail({
   invoice,
+  creditNotes,
   onClose,
   onRecordPayment,
+  onIssueCredit,
+  onVoidCredit,
   onVoid,
   onPrint,
   t,
   locale,
 }: {
   invoice: Invoice;
+  creditNotes: CreditNote[];
   onClose: () => void;
   onRecordPayment: () => void;
+  onIssueCredit: () => void;
+  onVoidCredit: (id: string) => void;
   onVoid: () => void;
   onPrint: () => void;
   t: (k: any) => string;
@@ -655,6 +858,8 @@ function InvoiceDetail({
 }) {
   const { payments, loading: paymentsLoading } = usePaymentsByInvoice(invoice.id);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const activeCredits = creditNotes.filter((c) => c.status !== 'void');
+  const totalCredited = invoice.amountCredited ?? 0;
 
   async function handleDeletePayment(paymentId: string) {
     if (!confirm(t('delete_payment_confirm'))) return;
@@ -708,6 +913,16 @@ function InvoiceDetail({
               <p className="font-bold text-red-700 mt-0.5">฿{formatCurrency(invoice.amountDue)}</p>
             </div>
           </div>
+
+          {totalCredited > 0 && (
+            <div className="flex items-center justify-between rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm">
+              <span className="text-amber-800 font-medium flex items-center gap-1.5">
+                <span className="material-symbols-outlined text-[16px]">receipt_long</span>
+                {locale === 'th' ? 'เครดิตคืนแล้ว' : 'Credited'}
+              </span>
+              <span className="font-bold text-amber-800">−฿{formatCurrency(totalCredited)}</span>
+            </div>
+          )}
 
           {/* Info */}
           <div className="grid grid-cols-2 gap-3 text-sm">
@@ -805,6 +1020,46 @@ function InvoiceDetail({
               </div>
             )}
           </div>
+
+          {/* Credit notes */}
+          {activeCredits.length > 0 && (
+            <div>
+              <h3 className="text-xs font-bold uppercase tracking-wider text-on-surface-variant mb-2">
+                {locale === 'th' ? 'เครดิตคืน' : 'Credit Notes'}
+              </h3>
+              <div className="space-y-2">
+                {activeCredits.map((c) => (
+                  <div key={c.id} className="flex items-center gap-3 p-3 rounded-lg bg-amber-50 border border-amber-100">
+                    <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center shrink-0">
+                      <span className="material-symbols-outlined text-amber-700 text-base">receipt_long</span>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-sm text-on-surface">฿{formatCurrency(c.amount)}</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">
+                          {c.creditNoteNumber}
+                        </span>
+                      </div>
+                      <p className="text-xs text-on-surface-variant truncate">
+                        {c.reason}
+                        {c.carriedForward > 0
+                          ? ` · ${locale === 'th' ? 'ยกยอด' : 'carried'} ฿${formatCurrency(c.carriedForward)}`
+                          : ''}
+                        {c.createdByName ? ` · ${c.createdByName}` : ''}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => onVoidCredit(c.id)}
+                      title={locale === 'th' ? 'ยกเลิกเครดิต' : 'Void credit'}
+                      className="text-error hover:opacity-70 shrink-0"
+                    >
+                      <span className="material-symbols-outlined text-lg">undo</span>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Actions */}
@@ -813,6 +1068,12 @@ function InvoiceDetail({
             <button onClick={onRecordPayment} className="flex-1 py-2.5 rounded-xl bg-primary text-on-primary text-sm font-semibold hover:opacity-90 flex items-center justify-center gap-1.5">
               <span className="material-symbols-outlined text-base">payments</span>
               {t('record_payment')}
+            </button>
+          )}
+          {invoice.status !== 'void' && (
+            <button onClick={onIssueCredit} className="py-2.5 px-4 rounded-xl border border-amber-300 text-amber-800 text-sm font-semibold hover:bg-amber-50 flex items-center gap-1.5">
+              <span className="material-symbols-outlined text-base">receipt_long</span>
+              {locale === 'th' ? 'เครดิตคืน' : 'Credit'}
             </button>
           )}
           <button onClick={onPrint} className="py-2.5 px-4 rounded-xl border border-outline-variant text-on-surface text-sm font-semibold hover:bg-surface-container-high flex items-center gap-1.5">
@@ -886,8 +1147,27 @@ export default function InvoicesPage() {
 
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [paymentInvoice, setPaymentInvoice] = useState<Invoice | null>(null);
+  const [creditInvoice, setCreditInvoice] = useState<Invoice | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const actor = useActor();
+  const { creditNotes } = useCreditNotes();
+
+  async function handleVoidCredit(id: string) {
+    if (!confirm(locale === 'th' ? 'ยกเลิกเครดิตนี้? ยอดค้างจะกลับมาเท่าเดิม' : 'Void this credit? The invoice balance will be restored.')) return;
+    try {
+      await voidCreditNote(id);
+    } catch (err) {
+      console.error('Failed to void credit note:', err);
+      alert(locale === 'th' ? 'ยกเลิกเครดิตไม่สำเร็จ' : 'Failed to void credit');
+    }
+  }
+
+  // The invoice shown in the detail modal, refreshed from the live list so its
+  // amounts/status reflect a credit or payment made while it's open.
+  const liveSelectedInvoice = selectedInvoice
+    ? allInvoices.find((i) => i.id === selectedInvoice.id) ?? selectedInvoice
+    : null;
   // Track which invoice row is expanded inline so the user can scan the
   // line items without opening the full detail modal.
   const [expandedInvoiceId, setExpandedInvoiceId] = useState<string | null>(null);
@@ -1348,16 +1628,30 @@ export default function InvoicesPage() {
       )}
 
       {/* Modals */}
-      {selectedInvoice && (
+      {liveSelectedInvoice && (
         <InvoiceDetail
-          invoice={selectedInvoice}
+          invoice={liveSelectedInvoice}
+          creditNotes={creditNotes.filter((c) => c.invoiceId === liveSelectedInvoice.id)}
           onClose={() => setSelectedInvoice(null)}
           onRecordPayment={() => {
-            setPaymentInvoice(selectedInvoice);
+            setPaymentInvoice(liveSelectedInvoice);
             setSelectedInvoice(null);
           }}
-          onVoid={() => handleVoid(selectedInvoice)}
-          onPrint={() => printInvoice(selectedInvoice)}
+          onIssueCredit={() => setCreditInvoice(liveSelectedInvoice)}
+          onVoidCredit={handleVoidCredit}
+          onVoid={() => handleVoid(liveSelectedInvoice)}
+          onPrint={() => printInvoice(liveSelectedInvoice)}
+          t={t}
+          locale={locale}
+        />
+      )}
+
+      {creditInvoice && (
+        <CreditNoteModal
+          invoice={creditInvoice}
+          actor={actor}
+          onClose={() => setCreditInvoice(null)}
+          onCreated={() => setCreditInvoice(null)}
           t={t}
           locale={locale}
         />

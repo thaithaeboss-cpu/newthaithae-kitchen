@@ -252,6 +252,7 @@ export interface Invoice {
   deliveryFee: number;
   total: number;
   amountPaid: number;
+  amountCredited?: number; // reduced by credit notes (damaged goods etc.)
   amountDue: number;
   status: InvoiceStatus;
   dueDate: Date;
@@ -280,6 +281,41 @@ export interface InvoiceFilters {
   status?: InvoiceStatus;
   startDate?: Date;
   endDate?: Date;
+}
+
+// ---- Credit note types (issued to a branch for damaged goods etc.) ----
+
+export type CreditNoteStatus = 'applied' | 'void';
+
+export interface CreditNoteLineItem {
+  productId: string;
+  nameTh: string;
+  nameEn: string;
+  quantity: number;   // qty being credited (e.g. damaged), <= invoiced qty
+  unitPrice: number;
+  total: number;      // quantity * unitPrice
+  unit: string;
+  sourceOrderId?: string;
+  sourceOrderNumber?: string;
+}
+
+export interface CreditNote {
+  id: string;
+  creditNoteNumber: string;   // CN-YYYYMM-XXXXX
+  invoiceId: string;
+  invoiceNumber: string;
+  branchId: string;
+  branchName: string;
+  items: CreditNoteLineItem[];
+  amount: number;             // total credited (sum of items)
+  reason: string;
+  appliedToInvoice: number;   // portion that reduced the invoice's amountDue
+  carriedForward: number;     // portion left as branch credit (invoice already paid)
+  status: CreditNoteStatus;
+  createdBy: string;
+  createdByName?: string;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface OrderFilters {
@@ -1617,6 +1653,21 @@ export async function getPaymentsByInvoice(invoiceId: string): Promise<PaymentRe
   }
 }
 
+// Recompute an invoice's outstanding + status from money paid and amount
+// credited (credit notes). Credits settle the invoice alongside payments, but
+// are tracked separately so cash received stays distinct from write-offs.
+function settleInvoice(
+  total: number,
+  amountPaid: number,
+  amountCredited: number,
+): { amountDue: number; status: InvoiceStatus } {
+  const settled = amountPaid + amountCredited;
+  const amountDue = Math.max(0, total - settled);
+  const status: InvoiceStatus =
+    settled <= 0 ? 'unpaid' : settled >= total ? 'paid' : 'partial';
+  return { amountDue, status };
+}
+
 export async function addPaymentRecord(
   data: Omit<PaymentRecord, 'id' | 'createdAt'>
 ): Promise<string> {
@@ -1629,8 +1680,11 @@ export async function addPaymentRecord(
 
     const newAmountPaid = ((invoice.amountPaid as number) || 0) + data.amount;
     const total = invoice.total as number;
-    const newAmountDue = total - newAmountPaid;
-    const newStatus: InvoiceStatus = newAmountPaid >= total ? 'paid' : 'partial';
+    const { amountDue: newAmountDue, status: newStatus } = settleInvoice(
+      total,
+      newAmountPaid,
+      (invoice.amountCredited as number) || 0,
+    );
 
     // Create payment record — strip undefined values
     const cleanData: Record<string, unknown> = {};
@@ -1647,7 +1701,7 @@ export async function addPaymentRecord(
     // Update invoice
     transaction.update(invoiceRef, {
       amountPaid: newAmountPaid,
-      amountDue: Math.max(0, newAmountDue),
+      amountDue: newAmountDue,
       status: newStatus,
       updatedAt: serverTimestamp(),
     });
@@ -1679,13 +1733,17 @@ export async function deletePaymentRecord(paymentId: string): Promise<void> {
 
     const newAmountPaid = Math.max(0, ((invoice.amountPaid as number) || 0) - (payment.amount as number));
     const total = invoice.total as number;
-    const newStatus: InvoiceStatus = newAmountPaid <= 0 ? 'unpaid' : newAmountPaid >= total ? 'paid' : 'partial';
+    const { amountDue: newAmountDue, status: newStatus } = settleInvoice(
+      total,
+      newAmountPaid,
+      (invoice.amountCredited as number) || 0,
+    );
 
     transaction.delete(paymentRef);
 
     transaction.update(invoiceRef, {
       amountPaid: newAmountPaid,
-      amountDue: total - newAmountPaid,
+      amountDue: newAmountDue,
       status: newStatus,
       updatedAt: serverTimestamp(),
     });
@@ -1693,11 +1751,192 @@ export async function deletePaymentRecord(paymentId: string): Promise<void> {
     const orderIds = (invoice.orderIds as string[]) || [];
     for (const orderId of orderIds) {
       transaction.update(doc(db, 'orders', orderId), {
-        paymentStatus: newAmountPaid <= 0 ? 'unpaid' : newStatus,
+        paymentStatus: newStatus,
         updatedAt: serverTimestamp(),
       });
     }
   });
+}
+
+// ============================================================
+// Credit Notes (branch credits for damaged goods etc.)
+// ============================================================
+
+export async function generateCreditNoteNumber(): Promise<string> {
+  const now = new Date();
+  const yearMonth = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const nextNum = await runTransaction(db, async (transaction) => {
+    const counterRef = doc(db, 'counters', 'creditNotes');
+    const snap = await transaction.get(counterRef);
+    const data = snap.exists() ? snap.data() : {};
+    const current = (data[yearMonth] as number) || 0;
+    const next = current + 1;
+    transaction.set(counterRef, { [yearMonth]: next }, { merge: true });
+    return next;
+  });
+  return `CN-${yearMonth}-${String(nextNum).padStart(5, '0')}`;
+}
+
+// Issue a credit note against an invoice. The credit first reduces the
+// invoice's outstanding (amountCredited / amountDue); any excess (when the
+// invoice is already paid) is recorded as `carriedForward` — a credit the
+// branch is owed. Damaged goods are NOT restocked. A contra-revenue accounting
+// entry is written so the ledger reflects the reduction.
+export async function addCreditNote(
+  data: {
+    invoiceId: string;
+    items: CreditNoteLineItem[];
+    reason: string;
+    createdBy: string;
+    createdByName?: string;
+  },
+): Promise<string> {
+  const creditNoteNumber = await generateCreditNoteNumber();
+
+  return runTransaction(db, async (transaction) => {
+    const invoiceRef = doc(db, 'invoices', data.invoiceId);
+    const invoiceSnap = await transaction.get(invoiceRef);
+    if (!invoiceSnap.exists()) throw new Error('Invoice not found');
+    const invoice = invoiceSnap.data();
+    if (invoice.status === 'void') throw new Error('Cannot credit a void invoice');
+
+    const amount = data.items.reduce((s, it) => s + (Number(it.total) || 0), 0);
+    if (amount <= 0) throw new Error('Credit amount must be greater than zero');
+
+    const total = invoice.total as number;
+    const amountPaid = (invoice.amountPaid as number) || 0;
+    const prevCredited = (invoice.amountCredited as number) || 0;
+    const outstanding = Math.max(0, total - amountPaid - prevCredited);
+
+    const appliedToInvoice = Math.min(amount, outstanding);
+    const carriedForward = amount - appliedToInvoice;
+
+    const newCredited = prevCredited + appliedToInvoice;
+    const { amountDue, status } = settleInvoice(total, amountPaid, newCredited);
+
+    // Update invoice outstanding + status
+    transaction.update(invoiceRef, {
+      amountCredited: newCredited,
+      amountDue,
+      status,
+      updatedAt: serverTimestamp(),
+    });
+
+    // Keep linked orders' payment status in sync
+    const orderIds = (invoice.orderIds as string[]) || [];
+    for (const orderId of orderIds) {
+      transaction.update(doc(db, 'orders', orderId), {
+        paymentStatus: status,
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    // Credit note document
+    const creditRef = doc(collection(db, 'creditNotes'));
+    transaction.set(creditRef, stripUndefined({
+      creditNoteNumber,
+      invoiceId: data.invoiceId,
+      invoiceNumber: (invoice.invoiceNumber as string) || '',
+      branchId: (invoice.branchId as string) || '',
+      branchName: (invoice.branchName as string) || '',
+      items: data.items,
+      amount,
+      reason: data.reason,
+      appliedToInvoice,
+      carriedForward,
+      status: 'applied' as CreditNoteStatus,
+      createdBy: data.createdBy,
+      createdByName: data.createdByName,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    }));
+
+    // Contra-revenue ledger entry (negative revenue) so accounting reflects it
+    const entryRef = doc(collection(db, 'accountingEntries'));
+    transaction.set(entryRef, {
+      type: 'revenue',
+      description: `เครดิตคืน ${creditNoteNumber} · ${(invoice.branchName as string) || ''} (${data.reason})`,
+      amount: -amount,
+      reference: creditNoteNumber,
+      branchId: (invoice.branchId as string) || '',
+      paymentStatus: 'paid',
+      paidDate: serverTimestamp(),
+      createdAt: serverTimestamp(),
+    });
+
+    return creditRef.id;
+  });
+}
+
+// Reverse a credit note: add the applied amount back onto the invoice, mark the
+// note void, and write a reversing (+amount) ledger entry.
+export async function voidCreditNote(id: string): Promise<void> {
+  return runTransaction(db, async (transaction) => {
+    const creditRef = doc(db, 'creditNotes', id);
+    const creditSnap = await transaction.get(creditRef);
+    if (!creditSnap.exists()) throw new Error('Credit note not found');
+    const credit = creditSnap.data();
+    if (credit.status === 'void') return;
+
+    const invoiceRef = doc(db, 'invoices', credit.invoiceId as string);
+    const invoiceSnap = await transaction.get(invoiceRef);
+    if (invoiceSnap.exists()) {
+      const invoice = invoiceSnap.data();
+      const total = invoice.total as number;
+      const amountPaid = (invoice.amountPaid as number) || 0;
+      const newCredited = Math.max(
+        0,
+        ((invoice.amountCredited as number) || 0) - ((credit.appliedToInvoice as number) || 0),
+      );
+      const { amountDue, status } = settleInvoice(total, amountPaid, newCredited);
+      transaction.update(invoiceRef, {
+        amountCredited: newCredited,
+        amountDue,
+        status,
+        updatedAt: serverTimestamp(),
+      });
+      const orderIds = (invoice.orderIds as string[]) || [];
+      for (const orderId of orderIds) {
+        transaction.update(doc(db, 'orders', orderId), {
+          paymentStatus: status,
+          updatedAt: serverTimestamp(),
+        });
+      }
+    }
+
+    transaction.update(creditRef, { status: 'void', updatedAt: serverTimestamp() });
+
+    // Reversing ledger entry
+    const entryRef = doc(collection(db, 'accountingEntries'));
+    transaction.set(entryRef, {
+      type: 'revenue',
+      description: `ยกเลิกเครดิตคืน ${(credit.creditNoteNumber as string) || ''}`,
+      amount: (credit.amount as number) || 0,
+      reference: (credit.creditNoteNumber as string) || '',
+      branchId: (credit.branchId as string) || '',
+      paymentStatus: 'paid',
+      paidDate: serverTimestamp(),
+      createdAt: serverTimestamp(),
+    });
+  });
+}
+
+export async function getCreditNotesByInvoice(invoiceId: string): Promise<CreditNote[]> {
+  if (!isFirestoreConfigured()) return [];
+  try {
+    const q = query(collection(db, 'creditNotes'), where('invoiceId', '==', invoiceId));
+    const snapshot = await getDocs(q);
+    return snapshot.docs
+      .map((d) => convertTimestamps<CreditNote>(d.data(), d.id))
+      .sort((a, b) => {
+        const ad = a.createdAt instanceof Date ? a.createdAt.getTime() : 0;
+        const bd = b.createdAt instanceof Date ? b.createdAt.getTime() : 0;
+        return bd - ad;
+      });
+  } catch (error) {
+    console.error('Error fetching credit notes:', error);
+    return [];
+  }
 }
 
 // ============================================================

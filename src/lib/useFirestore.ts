@@ -22,7 +22,7 @@ import type {
   AccountingEntry,
   InventoryAlert,
 } from '@/data/mock-data';
-import type { Order, Invoice, PaymentRecord, Announcement, OrderTimelineEntry } from './firestore';
+import type { Order, Invoice, PaymentRecord, Announcement, OrderTimelineEntry, CreditNote } from './firestore';
 
 // Map mock-data orders (legacy format) → firestore Order format
 function adaptMockOrders(raw: mockData.Order[]): Order[] {
@@ -1061,6 +1061,49 @@ export function useInvoices(filters?: InvoiceHookFilters) {
   }, [filterKey, refreshKey]);
 
   return { invoices, loading, error, refresh };
+}
+
+// ============================================================
+// useCreditNotes (real-time; all credit notes)
+// ============================================================
+
+export function useCreditNotes() {
+  const [creditNotes, setCreditNotes] = useState<CreditNote[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!isFirebaseConfigured()) {
+      setCreditNotes([]);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    const q = query(collection(db, 'creditNotes'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const items = snapshot.docs.map((d) => {
+          const data = d.data();
+          const converted: Record<string, unknown> = { id: d.id };
+          for (const [key, value] of Object.entries(data)) {
+            converted[key] = value instanceof Timestamp ? value.toDate() : value;
+          }
+          return converted as unknown as CreditNote;
+        });
+        setCreditNotes(items);
+        setLoading(false);
+      },
+      (err) => {
+        console.error('useCreditNotes error:', err);
+        setLoading(false);
+      },
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  return { creditNotes, loading };
 }
 
 // ============================================================
