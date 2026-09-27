@@ -8,6 +8,7 @@ import { useLanguage } from '@/lib/language-context';
 import { useActor } from '@/lib/staff-context';
 import Link from 'next/link';
 import EditOrderItemsModal from '@/components/EditOrderItemsModal';
+import { PrintModal } from '@/components/PrintModal';
 
 function formatCurrency(n: number) {
   return n.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -25,6 +26,7 @@ const ALL_STATUSES: OrderStatus[] = [
 
 export default function OrdersPage() {
   const { t, locale } = useLanguage();
+  const [printHtml, setPrintHtml] = useState<string | null>(null);
   const { orders, loading } = useOrders();
   const { branches } = useBranches();
   const actor = useActor();
@@ -168,13 +170,7 @@ export default function OrdersPage() {
       <div class="footer">${coName}${coTaxId ? ` &nbsp;·&nbsp; ABN/Tax ID: ${coTaxId}` : ''} &nbsp;·&nbsp; ${locale === 'th' ? 'พิมพ์เมื่อ' : 'Printed'}: ${new Date().toLocaleString(locale === 'th' ? 'th-TH' : 'en-AU')}</div>
     </body></html>`;
 
-    const w = window.open('', '_blank', 'width=700,height=900');
-    if (!w) return;
-    w.document.write(html);
-    w.document.close();
-    w.focus();
-    w.print();
-    w.onafterprint = () => w.close();
+    setPrintHtml(html);
   }
 
   const filtered = orders
@@ -659,6 +655,8 @@ export default function OrdersPage() {
           onClose={() => setEditingOrder(null)}
         />
       )}
+
+      <PrintModal html={printHtml} onClose={() => setPrintHtml(null)} locale={locale} />
     </div>
   );
 }

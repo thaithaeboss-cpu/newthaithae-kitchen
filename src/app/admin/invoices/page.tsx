@@ -5,6 +5,7 @@ import { useLanguage } from '@/lib/language-context';
 import { useBranches } from '@/lib/useFirestore';
 import { useInvoices, usePaymentsByInvoice, useCreditNotes } from '@/lib/useFirestore';
 import { useActor } from '@/lib/staff-context';
+import { PrintModal } from '@/components/PrintModal';
 import {
   addInvoice,
   addPaymentRecord,
@@ -1148,6 +1149,7 @@ export default function InvoicesPage() {
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [paymentInvoice, setPaymentInvoice] = useState<Invoice | null>(null);
   const [creditInvoice, setCreditInvoice] = useState<Invoice | null>(null);
+  const [printHtml, setPrintHtml] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const actor = useActor();
@@ -1328,13 +1330,7 @@ export default function InvoicesPage() {
       <div class="footer">${coName}${coTaxId ? ` &nbsp;·&nbsp; ABN/Tax ID: ${coTaxId}` : ''} &nbsp;·&nbsp; ${locale === 'th' ? 'พิมพ์เมื่อ' : 'Printed'}: ${new Date().toLocaleString(locale === 'th' ? 'th-TH' : 'en-AU')}</div>
     </body></html>`;
 
-    const w = window.open('', '_blank', 'width=700,height=900');
-    if (!w) return;
-    w.document.write(html);
-    w.document.close();
-    w.focus();
-    w.print();
-    w.onafterprint = () => w.close();
+    setPrintHtml(html);
   }
 
   return (
@@ -1676,6 +1672,8 @@ export default function InvoicesPage() {
         t={t}
         onCreated={refresh}
       />
+
+      <PrintModal html={printHtml} onClose={() => setPrintHtml(null)} locale={locale} />
     </div>
   );
 }

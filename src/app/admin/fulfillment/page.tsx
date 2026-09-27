@@ -9,6 +9,7 @@ import { useLanguage } from '@/lib/language-context';
 import { useActor } from '@/lib/staff-context';
 import type { TranslationKey } from '@/lib/i18n';
 import EditOrderItemsModal from '@/components/EditOrderItemsModal';
+import { PrintModal } from '@/components/PrintModal';
 
 type FulfillmentTab = 'new' | 'preparing' | 'dispatched';
 
@@ -52,6 +53,7 @@ function formatDate(dateVal: unknown) {
 
 export default function FulfillmentPage() {
   const { t, locale } = useLanguage();
+  const [printHtml, setPrintHtml] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<FulfillmentTab>('new');
   const [expandedOrder, setExpandedOrder] = useState<string | null>(null);
   const [editingOrder, setEditingOrder] = useState<Order | null>(null);
@@ -341,13 +343,7 @@ export default function FulfillmentPage() {
       <div class="footer">${coName}${coTaxId ? ` &nbsp;·&nbsp; ABN/Tax ID: ${coTaxId}` : ''} &nbsp;·&nbsp; ${locale === 'th' ? 'พิมพ์เมื่อ' : 'Printed'}: ${new Date().toLocaleString(locale === 'th' ? 'th-TH' : 'en-AU')}</div>
     </body></html>`;
 
-    const w = window.open('', '_blank', 'width=700,height=900');
-    if (!w) return;
-    w.document.write(html);
-    w.document.close();
-    w.focus();
-    w.print();
-    w.onafterprint = () => w.close();
+    setPrintHtml(html);
   }
 
   // Print ONE picking slip that merges several orders from the same branch.
@@ -502,13 +498,7 @@ export default function FulfillmentPage() {
       <div class="footer">${coName}${coTaxId ? ` &nbsp;·&nbsp; ABN/Tax ID: ${coTaxId}` : ''} &nbsp;·&nbsp; ${locale === 'th' ? 'รวมจากออเดอร์' : 'Merged from'}: ${orderNumbers} &nbsp;·&nbsp; ${locale === 'th' ? 'พิมพ์เมื่อ' : 'Printed'}: ${new Date().toLocaleString(locale === 'th' ? 'th-TH' : 'en-AU')}</div>
     </body></html>`;
 
-    const w = window.open('', '_blank', 'width=700,height=900');
-    if (!w) return;
-    w.document.write(html);
-    w.document.close();
-    w.focus();
-    w.print();
-    w.onafterprint = () => w.close();
+    setPrintHtml(html);
   }
 
   // Print an A4 sheet of any aggregated bucket. Used by both "new" and
@@ -584,13 +574,7 @@ export default function FulfillmentPage() {
       <div class="footer">${coName} &nbsp;·&nbsp; ${locale === 'th' ? 'รายการอัปเดตทุกครั้งที่มีออเดอร์เปลี่ยนสถานะ' : 'List updates whenever order statuses change'}</div>
     </body></html>`;
 
-    const w = window.open('', '_blank', 'width=800,height=1000');
-    if (!w) return;
-    w.document.write(html);
-    w.document.close();
-    w.focus();
-    w.print();
-    w.onafterprint = () => w.close();
+    setPrintHtml(html);
   }
 
   return (
@@ -1280,6 +1264,8 @@ export default function FulfillmentPage() {
           </div>
         </div>
       )}
+
+      <PrintModal html={printHtml} onClose={() => setPrintHtml(null)} locale={locale} />
     </div>
   );
 }
